@@ -24,7 +24,7 @@ source-repository head
   location: https://github.com/bhurt/psql-migrate
 
 library
-  exposed-modules:  Lib
+  exposed-modules:  Database.PostgreSQL.Simple.Migrate
                     , Database.PostgreSQL.Simple.Migrate.Internal.Order
                     , Database.PostgreSQL.Simple.Migrate.Internal.Types
   hs-source-dirs:   src
