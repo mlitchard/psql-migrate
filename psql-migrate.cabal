@@ -1,0 +1,45 @@
+cabal-version: 1.12
+
+name:           psql-migrate
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/githubuser/psql-migrate#readme>
+homepage:       https://github.com/githubuser/psql-migrate#readme
+bug-reports:    https://github.com/githubuser/psql-migrate/issues
+author:         Author name here
+maintainer:     example@example.com
+copyright:      2023 Author name here
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    CHANGELOG.md
+
+source-repository head
+  type: git
+  location: https://github.com/githubuser/psql-migrate
+
+library
+  exposed-modules:
+      Lib
+  other-modules:
+      Paths_psql_migrate
+  hs-source-dirs:
+      src
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
+  build-depends:
+      base >=4.7 && <5
+  default-language: Haskell2010
+
+test-suite psql-migrate-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_psql_migrate
+  hs-source-dirs:
+      test
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , psql-migrate
+  default-language: Haskell2010
