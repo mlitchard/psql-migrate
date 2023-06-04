@@ -2,12 +2,12 @@ cabal-version: 1.12
 
 name:           psql-migrate
 version:        0.1.0.0
-description:    Please see the README on GitHub at <https://github.com/githubuser/psql-migrate#readme>
-homepage:       https://github.com/githubuser/psql-migrate#readme
-bug-reports:    https://github.com/githubuser/psql-migrate/issues
-author:         Author name here
-maintainer:     example@example.com
-copyright:      2023 Author name here
+description:    Please see the README on GitHub at <https://github.com/bhurt/psql-migrate#readme>
+homepage:       https://github.com/bhurt/psql-migrate#readme
+bug-reports:    https://github.com/bhurt/psql-migrate/issues
+author:         Brian Hurt
+maintainer:     bhurt42@gmail.com
+copyright:      2023 Brian Hurt
 license:        BSD3
 license-file:   LICENSE
 build-type:     Simple
@@ -15,31 +15,43 @@ extra-source-files:
     README.md
     CHANGELOG.md
 
+Flag Devel
+  Description:      Turn on warnings and turn off optimization
+  Default:          False
+
 source-repository head
   type: git
-  location: https://github.com/githubuser/psql-migrate
+  location: https://github.com/bhurt/psql-migrate
 
 library
-  exposed-modules:
-      Lib
-  other-modules:
-      Paths_psql_migrate
-  hs-source-dirs:
-      src
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
-  build-depends:
-      base >=4.7 && <5
+  exposed-modules:  Lib
+  hs-source-dirs:   src
+  if flag(devel)
+    ghc-options:    -Weverything
+                    -Werror
+                    -Wno-missing-safe-haskell-mode
+                    -Wno-implicit-prelude
+                    -Wno-safe
+                    -O0
+  else
+    ghc-options:    -O2
+  build-depends:    base >=4.7 && <5
   default-language: Haskell2010
 
 test-suite psql-migrate-test
-  type: exitcode-stdio-1.0
-  main-is: Spec.hs
-  other-modules:
-      Paths_psql_migrate
-  hs-source-dirs:
-      test
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  type:             exitcode-stdio-1.0
+  main-is:          Spec.hs
+  hs-source-dirs:   test
+  ghc-options:      -Weverything
+                    -Werror
+                    -Wno-missing-safe-haskell-mode
+                    -Wno-implicit-prelude
+                    -Wno-safe
+                    -O1
+                    -threaded
+                    -rtsopts
+                    -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
-    , psql-migrate
+      -- , psql-migrate
   default-language: Haskell2010
