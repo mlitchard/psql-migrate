@@ -25,4 +25,4 @@ cabal.project.local~
 *~
 .*.sw?
 psql-migrate.cabal
-
+stack.yaml.lock
