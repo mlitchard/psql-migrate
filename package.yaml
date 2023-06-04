@@ -36,17 +36,6 @@ ghc-options:
 library:
   source-dirs: src
 
-executables:
-  psql-migrate-exe:
-    main:                Main.hs
-    source-dirs:         app
-    ghc-options:
-    - -threaded
-    - -rtsopts
-    - -with-rtsopts=-N
-    dependencies:
-    - psql-migrate
-
 tests:
   psql-migrate-test:
     main:                Spec.hs
