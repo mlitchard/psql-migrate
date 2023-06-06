@@ -25,15 +25,13 @@ source-repository head
 
 library
   exposed-modules:  Database.PostgreSQL.Simple.Migrate
+                    , Database.PostgreSQL.Simple.Migrate.Internal.Apply
                     , Database.PostgreSQL.Simple.Migrate.Internal.Order
                     , Database.PostgreSQL.Simple.Migrate.Internal.Types
   hs-source-dirs:   src
   if flag(devel)
-    ghc-options:    -Weverything
+    ghc-options:    -Wall
                     -Werror
-                    -Wno-missing-safe-haskell-mode
-                    -Wno-implicit-prelude
-                    -Wno-safe
                     -O0
   else
     ghc-options:    -O2
@@ -48,17 +46,16 @@ library
 test-suite psql-migrate-test
   type:             exitcode-stdio-1.0
   main-is:          Spec.hs
+  other-modules:    Tests
   hs-source-dirs:   test
-  ghc-options:      -Weverything
+  ghc-options:      -Wall
                     -Werror
-                    -Wno-missing-safe-haskell-mode
-                    -Wno-implicit-prelude
-                    -Wno-safe
                     -O1
                     -threaded
                     -rtsopts
                     -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
+      , HUnit
       -- , psql-migrate
   default-language: Haskell2010
