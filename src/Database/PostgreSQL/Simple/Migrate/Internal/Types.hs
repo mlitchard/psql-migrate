@@ -24,7 +24,6 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     import           Data.CaseInsensitive             (CI)
     import qualified Data.CaseInsensitive             as CI
     import           Data.Text                        (Text)
-    import           Data.Typeable
     import           Database.PostgreSQL.Simple.Types (Query (..))
     import           GHC.Generics
 
@@ -34,7 +33,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
                         -- ^ The migration may not have been applied yet.
                     | Required
                         -- ^ The migration must have been applied.
-        deriving (Show, Read, Ord, Eq, Generic, Typeable, Bounded, Enum)
+        deriving (Show, Read, Ord, Eq, Generic, Bounded, Enum)
 
     instance NFData Optional where
         rnf = rwhnf
@@ -317,7 +316,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
         
         replaces :: [ Replaces ]
         -- ^ The list of migrations this migration replaces.
-    } deriving (Show, Read, Ord, Eq, Generic, Typeable)
+    } deriving (Show, Read, Ord, Eq, Generic)
 
     instance NFData Migration where
         rnf mig = rnf (name mig)
@@ -372,7 +371,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
                             rOptional    :: Optional
                             -- ^ If the replaced migration is optional.
                             }
-                            deriving (Show, Read, Ord, Eq, Generic, Typeable)
+                            deriving (Show, Read, Ord, Eq, Generic)
 
     instance NFData Replaces where
         rnf rep = rnf (rName rep)
