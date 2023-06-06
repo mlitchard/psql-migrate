@@ -15,7 +15,7 @@
 --
 
 module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
-    makeFingerprint,
+    Verbose(..),
     apply
 ) where
 
@@ -33,12 +33,9 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
 
     -- These screw up the formatting, so they get their own,
     -- unformatted, block.
-    import Database.PostgreSQL.Simple.Migrate.Internal.Types
+    import Database.PostgreSQL.Simple.Migrate.Internal.Finger
     import Database.PostgreSQL.Simple.Migrate.Internal.Order
-
-    -- | Calculate the fingerprint of a given migration.
-    makeFingerprint :: Migration -> Text
-    makeFingerprint = undefined
+    import Database.PostgreSQL.Simple.Migrate.Internal.Types
 
     -- | The verbosity level.
     --
