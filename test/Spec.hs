@@ -1,2 +1,7 @@
+
+import           Test.HUnit (runTestTTAndExit)
+import           Tests      (tests)
+
 main :: IO ()
-main = putStrLn "Test suite not yet implemented"
+main = runTestTTAndExit tests
+
