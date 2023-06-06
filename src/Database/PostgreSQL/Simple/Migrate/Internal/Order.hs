@@ -15,7 +15,8 @@
 --
 module Database.PostgreSQL.Simple.Migrate.Internal.Order (
     orderMigrations,
-    OrderMigrationsError(..)
+    OrderMigrationsError(..),
+    formatOrderMigrationsError
 ) where
 
     import           Control.DeepSeq
@@ -46,7 +47,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
     data OrderMigrationsError =
     
         -- | Two (or more) migrations have the same name.
-        DuplicateMigrationName Text Text
+        DuplicateMigrationName Text
 
         -- | A migration lists the same dependency more than once.
         | DuplicateDependency Text Text
@@ -75,7 +76,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
         deriving (Show, Read, Ord, Eq, Generic, Typeable)
 
     instance NFData OrderMigrationsError where
-        rnf (DuplicateMigrationName x y)    = rnf x `seq` rnf y `seq` ()
+        rnf (DuplicateMigrationName x)      = rnf x `seq` ()
         rnf (DuplicateDependency x y)       = rnf x `seq` rnf y `seq` ()
         rnf (UnknownDependency x y)         = rnf x `seq` rnf y `seq` ()
         rnf (RequiredDependsOnOptional x y) = rnf x `seq` rnf y `seq` ()
@@ -86,6 +87,43 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
         rnf (NoRequiredReplacement t)       = rnf t
         rnf (DuplicateReplaces x y)         = rnf x `seq` rnf y `seq` ()
         rnf (ReplacedStillExists t u)       = rnf t `seq` rnf u `seq` ()
+
+
+    -- | Convert an `OrderMigrationsError` into a human-readable string.
+    formatOrderMigrationsError :: OrderMigrationsError -> String
+    formatOrderMigrationsError (DuplicateMigrationName nm) =
+        "Two or more migrations share the name " ++ show nm
+    formatOrderMigrationsError (DuplicateDependency migName depName) =
+        "The migration " ++ show migName
+            ++ " has duplicate dependencies " ++ show depName
+    formatOrderMigrationsError (UnknownDependency migName depName) =
+        "The migration " ++ show migName
+            ++ " has a dependency " ++ show depName ++ " not in the list."
+    formatOrderMigrationsError (RequiredDependsOnOptional
+                                    reqMigName optMigName) =
+        "The required migration " ++ show reqMigName
+            ++ " depends upon the optional migration " ++ show optMigName
+    formatOrderMigrationsError (CircularDependency migs) =
+        "The following set of migrations form a dependency cycle: "
+        ++ show migs
+    formatOrderMigrationsError (LaterPhaseDependency
+                                    earlierMig earlierPhase
+                                    laterMig laterPhase) =
+        "The migration " ++ show earlierMig
+            ++ " in phase " ++ show earlierPhase
+            ++ " dependends upon the migration " ++ show laterMig
+            ++ " in phase " ++ show laterPhase
+    formatOrderMigrationsError (NoRequiredReplacement migName) =
+        "The migration " ++ show migName ++ " replaces other migrations,"
+            ++ " but has no required replacements"
+    formatOrderMigrationsError (DuplicateReplaces migName replName) =
+        "The migration " ++ show migName ++ " lists the migration "
+            ++ show replName ++ " in it's replaces list multiple times."
+    formatOrderMigrationsError (ReplacedStillExists migName replacedName) =
+        "The migration " ++ show migName
+        ++ " says that it replaces the migration " ++ show replacedName
+        ++ ", but that migration still exists in the list."
+
 
 
     -- | Simple monad typedef.
@@ -190,7 +228,6 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
                     Just mig2 ->
                         -- Yes: we're a duplicate name.
                         Left $ DuplicateMigrationName 
-                                (CI.original (name mig2))
                                 (CI.original (name mig))
                     Nothing ->
                         -- No: add us to the map and continue.
@@ -211,9 +248,11 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
                 rs -> do
                     mapM_ checkRepl rs
                     checkReqRepl rs
+                    foldr checkDupRepl (\_ -> Right ()) rs Set.empty
                     cont
                     
         where
+
             -- Check a dependency for multiple error conditions.
             checkDep :: K
                         -> (Set K -> M ())
@@ -277,6 +316,13 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
 
             isReq :: Replaces -> Bool
             isReq repl = rOptional repl == Required
+
+            checkDupRepl :: Replaces -> (Set K -> M ()) -> Set K -> M ()
+            checkDupRepl repl next set =
+                if (Set.member (rName repl) set)
+                then Left $ DuplicateReplaces (CI.original (name mig))
+                                (CI.original (rName repl))
+                else next (Set.insert (rName repl) set)
 
     -- | Turn a MigMap into a set of graphs, one per phase.
     makeGraphs :: MigMap -> IntMap Grph
