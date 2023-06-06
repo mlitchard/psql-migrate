@@ -8,9 +8,10 @@
 -- Maintainer  : Brian Hurt <bhurt42@gmail.com>
 -- Stability   : experimental
 --
--- This is an internal module of
--- "Database.PostgreSQL.Simple.Migrate.Internal", you probably want
--- that module instead.
+-- This is an internal module of "Database.PostgreSQL.Simple.Migrate",
+-- you probably want that module instead.  Anything exported by this
+-- module that is not also exported by the main module is subject
+-- to change without notice.
 --
 module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     Migration(..),
