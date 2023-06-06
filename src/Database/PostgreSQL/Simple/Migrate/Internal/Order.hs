@@ -290,6 +290,13 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
                                     (phase mig)
                                     (CI.original (name depMig))
                                     (phase depMig)
+
+                        -- Check if we're a direct cycle (i.e. we
+                        -- depend upon ourselves).
+                        | (depCIName == (name mig)) ->
+                            Left $ CircularDependency
+                                    ((CI.original (name mig))
+                                        :| [ CI.original depCIName ])
                         | otherwise                        ->
                            next (Set.insert depCIName set)
 
