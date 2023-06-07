@@ -229,7 +229,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
                     Just mig2 ->
                         -- Yes: we're a duplicate name.
                         Left $ DuplicateMigrationName 
-                                (CI.original (name mig))
+                                (CI.original (name mig2))
                     Nothing ->
                         -- No: add us to the map and continue.
                         let mp2 :: MigMap
