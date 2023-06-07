@@ -18,7 +18,13 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     makeMigration,
     Optional(..),
     Replaces(..),
-    makeReplaces
+    makeReplaces,
+    addDependency,
+    addDependencies,
+    setOptional,
+    setPhase,
+    addReplaces,
+    setReplacesOptional
 ) where
 
     import           Control.DeepSeq
@@ -57,18 +63,17 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     -- import Database.PostgreSQL.Simple.SqlQQ
     --
     -- myMigration :: Migration
-    -- myMigration = makeMigration "example-mig-1" [sql| ... |] []
+    -- myMigration = makeMigration "example-mig-1" [sql| ... |]
     -- @
     --
-    -- You can then override parameters with the structure update
-    -- syntax:
+    -- You can then override parameters with the various update functions:
     --
     -- @
     -- myMigration2 :: Migration
     -- myMiragtion2 = makeMigration "example-mig-2" [sql| ... |]
-    --                  [ \"example-mig-1\" ]
-    --                  { optional = Optional,
-    --                      phase = 2 }
+    --                  `addDepedency` "example-mig-1"
+    --                  `setOptional` Optional
+    --                  `setPhase` 2
     -- @
     --
     -- == Field Details
@@ -133,9 +138,9 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     -- * For a migration marked as Required to depend upon a
     -- migration marked as Optional.
     --
-    -- This value is passed to `makeMigration` as it's second argument.
-    -- A value of @[]@ (the empty list) is valid, and is the
-    -- recommended default.
+    -- `makeMigration` sets this value to @[]@ (the empty list).
+    -- It can be set using the `addDependency` or `addDependencies`
+    -- functions.
     --
     -- ==== __optional__
     --
@@ -153,7 +158,8 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     -- redeployed, you then apply the new migration.  At some later
     -- date, the optional migration can then be marked as required.
     -- 
-    -- `makeMigration` sets this field to `Required`.
+    -- `makeMigration` sets this field to `Required`.  It can be
+    -- set using the `setOptional` function.
     --
     -- ==== __phase__
     --
@@ -178,7 +184,8 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     -- in phases -1, 0, 1, and 100, and that's OK- phases 2 through
     -- 99 just don't have any migrations in them.
     --
-    -- `makeMigration` sets this field to 1.
+    -- `makeMigration` sets this field to 1.  It can be set using
+    -- the `setPhase` function.
     --
     -- ==== __replaces__
     --
@@ -266,13 +273,13 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     -- @
     -- migrations = [
     --    makeMigration "foo-1"
-    --      [sql|CREATE TABLE foo (foo INT PRIMARY KEY); |] [],
+    --      [sql|CREATE TABLE foo (foo INT PRIMARY KEY); |],
     --    makeMigration "foo-2"
     --      [sql|ALTER TABLE foo ADD COLUMN bar TEXT; |]
-    --      [ "foo-1" ],
+    --      `addDependency` "foo-1",
     --    makeMigration "foo-3"
     --      [sql|ALTER TABLE foo ADD COLUMN baz BOOL; |] ]
-    --      [ "foo-1", "foo-2" ]
+    --      `addDependencies` [ "foo-1", "foo-2" ]
     -- @
     --
     -- We could replace this with:
@@ -284,10 +291,10 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     --                 foo INT PRIMARY KEY,
     --                 bar TEXT,
     --                 baz BOOL); |]
-    --        { replaces = [
+    --        `addReplaces` [
     --              makeReplaces "foo1" "<fingerprint>",
     --              makeReplaces "foo2" "<fingerprint>",
-    --              makeReplaces "foo3" "<fingerprint>" ] }
+    --              makeReplaces "foo3" "<fingerprint>" ]
     --    ]
     -- @
     --
@@ -296,7 +303,8 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     -- can quietly drop the replaces field, and move forward with
     -- your cleaner migration list.
     --
-    -- `makeMigration` sets this field to @[]@ (the empty list).
+    -- `makeMigration` sets this field to @[]@ (the empty list).  It
+    -- can be modified with the `addReplaces` function.
     --
     data Migration = Migration {
         name :: CI Text,
@@ -342,19 +350,21 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     --
     -- * The `replaces` field is set to @[]@ (the empty list).
     --
+    -- These fields can be overridden by the `setDependency`,
+    -- `setDependencies`, `setPhase`, `setOptional`, and
+    -- `addReplaces` functions.
+    --
     makeMigration :: Text
                         -- ^ Migration name
                         -> Query
                         -- ^ Migration command
-                        -> [ Text ]
-                        -- ^ Dependencies
                         -> Migration
-    makeMigration nm cmd deps = Migration {
+    makeMigration nm cmd = Migration {
                                 name         = CI.mk nm,
                                 command      = cmd,
                                 optional     = Required,
                                 phase        = 1,
-                                dependencies = (CI.mk <$> deps),
+                                dependencies = [],
                                 replaces     = [] }
 
 
@@ -383,11 +393,12 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
 
     -- | Make a Replaces data structure.
     --
-    -- The rOptional field can be set using the structure update syntax,
+    -- The rOptional field can be set using `setReplacesOptional` function,
     -- like:
     --
     -- @
-    --    makeReplaces "example-1" "..." { rOptional = Optional }
+    --    makeReplaces "example-1" "..."
+    --      `setReplacesOptional`  Optional
     -- @
     --
     -- See the replaces field documentation in the `Migration` data
@@ -401,4 +412,97 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
                                 rName        = CI.mk nm,
                                 rFingerprint = fprint,
                                 rOptional    = Required }
+
+    -- | Add a dependency to a migration.
+    --
+    -- This is intended to be using via backticks with makeMigration,
+    -- like:
+    --
+    -- @
+    --      makeMigration "example-1" [sql| Some SQL |]
+    --          `addDependency` "example-2"
+    -- @
+    --
+    -- It can be applied multiple times:
+    --
+    -- @
+    --      makeMigration "example-1" [sql| Some SQL |]
+    --          `addDependency` "example-2"
+    --          `addDependency` "example-3"
+    --          `addDependency` "example-4"
+    -- @
+    --
+    -- But in this case, it's probably a better idea to use
+    -- `addDependencies` instead.
+    --
+    addDependency :: Migration -> Text -> Migration
+    addDependency mig dep =
+        mig { dependencies = CI.mk dep : dependencies mig }
+
+    -- | Add a list of dependencies to a migration.
+    --
+    -- This is intended to be using via backticks with makeMigration,
+    -- like:
+    --
+    -- @
+    --      makeMigration "example-1" [sql| Some SQL |]
+    --          `addDependencies` [ "example-2", "example-3" ]
+    -- @
+    --
+    addDependencies :: Migration -> [ Text ] -> Migration
+    addDependencies mig deps =
+        mig { dependencies = (CI.mk <$> deps) ++ dependencies mig }
+
+    -- | Set the optional field of a migration.
+    --
+    -- This is intended to be using via backticks with makeMigration,
+    -- like:
+    --
+    -- @
+    --      makeMigration "example-1" [sql| Some SQL |]
+    --          `setOptional` Optional
+    -- @
+    --
+    setOptional :: Migration -> Optional -> Migration
+    setOptional mig opt = mig { optional = opt }
+
+    -- | Set the phase field of a migration.
+    --
+    -- This is intended to be using via backticks with makeMigration,
+    -- like:
+    --
+    -- @
+    --      makeMigration "example-1" [sql| Some SQL |]
+    --          `setPhase` 2
+    -- @
+    --
+    setPhase :: Migration -> Int -> Migration
+    setPhase mig phz = mig { phase = phz }
+
+    -- | Add a list of replaced migrations to a migration.
+    --
+    -- This is intended to be using via backticks with makeMigration,
+    -- like:
+    --
+    -- @
+    --      makeMigration "example-1" [sql| Some SQL |]
+    --          `addReplaces`
+    --              [ makeReplaces "example-2" "fingerprint" ]
+    -- @
+    --
+    addReplaces :: Migration -> [ Replaces ] -> Migration
+    addReplaces mig repls = mig { replaces = repls ++ replaces mig }
+
+    -- | Set the optional field of a `Replaces` structure.
+    --
+    -- This is intended to be using via backticks with makeReplaces,
+    -- like:
+    --
+    -- @
+    --      makeReplaces "example-1" "<fingerprint>"
+    --          `setReplacesOptional` Optional
+    -- @
+    --
+    setReplacesOptional :: Replaces -> Optional -> Replaces
+    setReplacesOptional repl opt = repl { rOptional = opt }
 

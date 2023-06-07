@@ -1,12 +1,383 @@
 
+-- |
+-- Module      : Database.PostgreSQL.Simple.Migrate
+-- Description : Yet another migration tool for Haskell/PostgreSQL projects.
+-- Copyright   : (c) Brian Hurt, 2023
+-- License     : None
+-- Maintainer  : Brian Hurt <bhurt42@gmail.com>
+-- Stability   : experimental
+--
+-- = Justification
+--
+-- Given that there are already several very good SQL schema management
+-- tools (such as Liquibase) and several Haskell libraries for doing
+-- schema management, why write another one?
+--
+-- The answer is that psql-migrate has a different philosophy for
+-- maintaining the schema.  Rather than being a separate tool with
+-- separate data from the main program, it's designed to integrate
+-- into the code.  Migrations are just another data structure,
+-- intendend to live right along side the other data structures and
+-- functions that depend on them.
+--
+-- This change in philosophy gives rise to four unusual features:
+-- dependencies, phases, optional, and replaces.
+--
+-- == Depenencies
+--
+-- This library does not keep a single, totally ordered, list of
+-- migrations (possibly split across several files), like most other
+-- schema migration tools/libraries.  Instead, migrations list their
+-- direct dependencies.  When the migrations are applied to a database,
+-- we ensure that all the dependencies to a given migration are applied
+-- before that migration is itself applied.
+--
+-- In graph theory terms, listing the direct dependencies creates a
+-- partial ordering.  We then perform a topological sort to create
+-- the order the migrations are applied in.  Don't worry if you don't
+-- understand these terms- this paragraph says the exact same thing
+-- the previous paragraph does.
+--
+-- This allows migrations to live in the same modules as the code
+-- accessing it.  For example, say we have an app that has user
+-- accounts.  We might have a User module:
+-- 
+-- @
+-- module User (User(..), getUser, migrations) where
+--
+--     data User = User {
+--                  userId   :: Int,
+--                  userName :: String }
+--
+--     getUser :: Connection -> Int -> IO User
+--     getUser = ...
+-- 
+--     migrations :: [ Migration ]
+--     migration = [
+--          makeMigration "user-1"
+--              [sql| CREATE TABLE users(
+--                      id SERIAL PRIMARY KEY,
+--                      name VARCHAR NOT NULL); |]
+--          ]
+-- @
+--
+-- Notice already that our migration to create the @users@ table in the
+-- database lives with the other code and types that interact heavily
+-- with it.  If we wanted to add a password column to the table, we
+-- could just do:
+--
+-- @
+-- module User (User(..), getUser, migrations) where
+--
+--     data User = User {
+--                  userId       :: Int,
+--                  userName     :: String,
+--                  userPassword :: String }
+--
+--     getUser :: Connection -> Int -> IO User
+--     getUser = ...
+-- 
+--     migrations :: [ Migration ]
+--     migration = [
+--          makeMigration "user-1"
+--              [sql| CREATE TABLE users(
+--                      id SERIAL PRIMARY KEY,
+--                      name VARCHAR NOT NULL); |],
+--          makeMigration "user-2"
+--              [sql| ALTER TABLE users
+--                      ADD COLUMN password VARCHAR; |]
+--              \`addDependency\` "user-1"
+--          ]
+-- @
+--
+-- The \"user-2\" migration now has a dependency- the \"user-1\" migration.
+-- It doesn't make sense to add a column to a table that hasn't been
+-- created yet!  This forces \"user-1\" to be applied before \"user-2\".
+--
+-- Their order migrations appear in the list has no effect on the order
+-- they are applied it.  It would be perfectly fine for us to list
+-- \"user-2\" before \"user-1\":
+--
+-- @
+--     migrations :: [ Migration ]
+--     migration = [
+--          makeMigration "user-2"
+--              [sql| ALTER TABLE users
+--                      ADD COLUMN password VARCHAR; |]
+--              \`addDependency\` "user-1",
+--          makeMigration "user-1"
+--              [sql| CREATE TABLE users(
+--                      id SERIAL PRIMARY KEY,
+--                      name VARCHAR NOT NULL); |]
+--          ]
+-- @
+--
+-- This is because migrations can depend upon migrations in other lists.
+-- Say we want users to be able to send each other messages.  We might
+-- do:
+--
+-- @
+-- module Messages(Message(..), getMessages, migrations) where
+--      data Message = Message {
+--          messageId   :: Int,
+--          messageFrom :: String,
+--          messageBody :: String }
+--
+--      getMessage :: Connection -> Int -> IO [ Message ]
+--      getMessage = ...
+--
+--      migrations :: [ Migration ]
+--      migrations = [
+--          makeMigration "messages-1"
+--              [sql| CREATE TABLE messages (
+--                      id SERIAL PRIMARY KEY,
+--                      fromUser INT NOT NULL
+--                          REFERENCES users(id)
+--                          ON CASCADE DELETE,
+--                      toUser INT NOT NULL
+--                          REFERENCES users(id)
+--                          ON CASCADE DELETE,
+--                      body VARCHAR NOT NULL );
+--              |]
+--          ]
+-- @
+--
+-- Here, we don't want to create the @messages@ table before the @user@
+-- table is created, as the @messages@ table does foreign key references
+-- to it.  There is, however, no explicit ordering between the
+-- \"user-2\" migration and the \"messages-1\" migration.  Which is
+-- correct- they do not depend upon each other, so they can be applied
+-- in either order.
+--
+-- This is important, because somewhere we're going to have a program to
+-- apply the migrations to a database.  Something like:
+--
+-- @
+-- module ApplyApp (
+--    main
+-- ) where
+--
+--      import qualified Database.PostgreSQL.Simple as PG
+--      import Database.PostgreSQL.Simple.Migrate
+--      import qualified Messages
+--      import qualified User
+--
+--      main :: IO ()
+--      main = do
+--          _ <- apply Medium allMigrations
+--                  (PG.connect PG.defaultConnectionOptions)
+--          pure ()
+--
+--      allMigrations :: [ Migration ]
+--      allMigrations = []
+--          -- Sorted in alphabetical order,
+--          -- because why not?
+--          ++ Messages.migrations
+--          ++ User.migrations
+-- @
+--
+-- Here, Messages' \"messages-1\" migration is listed before User's
+-- \"user-1\".  This is just how it fell out.  The User and Messages
+-- neither know nor care what order they appear in the allMigrations
+-- list.  The explicit dependencies guarantees they will be applied
+-- in a correct order.
+--
+-- == Phases
+--
+-- Dependencies are the primary way to order migrations.  But some
+-- times, some migrations just want to happen before or after everything
+-- else.  For example, you might want to create a dbtype table, labelling
+-- the database as production, test, or development:
+--
+-- @
+--  migrations :: [ Migration ]
+--  migrations = [
+--      makeMigration "dbtype-1"
+--          [sql| CREATE TABLE dbtype(
+--                  only_row BOOL PRIMARY KEY
+--                              DEFAULT TRUE,
+--                  dbtype TEXT NOT NULL,
+--                  CONSTRAINT only_one_row
+--                      CHECK (only_row); |],
+--      makeMigration "db-type-insert-1"
+--          [sql| INSERT INTO dbtype(dbtype)
+--                  VALUES('development'); |]
+--          \`addDependency\` "dbtype-1"
+--      ]
+-- @
+--
+-- We want these migrations to run first, before everything else.  We
+-- could just add a dependency to \"db-type-insert-1\" to every other
+-- constraint, or we could use phases.
+--
+-- Every migration has a phase.  By default, `makeMigration` sets this
+-- phase to 1, which is generally correct.  The rule is: every migration
+-- of phase N happens before any migration of phase N+1 happens.  So
+-- by setting these migrations to be phase 0, they will happen \"first\":
+--
+-- @
+--  migrations :: [ Migration ]
+--  migrations = [
+--      makeMigration "dbtype-1"
+--          [sql| CREATE TABLE dbtype(
+--                  only_row BOOL PRIMARY KEY
+--                              DEFAULT TRUE,
+--                  dbtype TEXT NOT NULL,
+--                  CONSTRAINT only_one_row
+--                      CHECK (only_row); |]
+--          \`setPhase\` 0,
+--      makeMigration "db-type-insert-1"
+--          [sql| INSERT INTO dbtype(dbtype)
+--                  VALUES('development'); |]
+--          \`addDependency\` "dbtype-1"
+--          \`setPhase\` 0
+--      ]
+-- @
+--
+--
+-- == Optional
+--
+-- There is a chicken or the egg problem in applying a new database
+-- schema.  Do you deploy the server that depends upon the new schema
+-- first, or do you apply the new schema first?
+--
+-- Having the migrations as part of the code makes them available at
+-- run-time.  This opens up a possibility.  We can just mark certain
+-- migrations as optional.  That means they may (or may not) have
+-- been applied.
+--
+-- We can then write our server to test (if needed) whether or not
+-- the optional migration has been applied.  The application can
+-- test whether the migration has been applied or not with the query:
+--
+-- @
+--  SELECT EXISTS (
+--      SELECT 1
+--      FROM schema_migrations
+--      WHERE name = 'name'
+--      LIMIT 1);
+-- @
+--
+-- Note that the name will be lower-case, as migration names are
+-- case-insensitive.
+--
+-- The server can then do one thing if the migration has not been applied,
+-- and another thing once it has.  This solves the chicken and the egg
+-- problem.  You deploy the server first.  It then continually queries the
+-- database for whether the migration has been applied yet or not.  As
+-- it hasn't been applied, the application does the old thing.  Then,
+-- some time later, you apply the migration.  Migrations are applied
+-- in a transaction, and schema updates in PostgreSQL are transactional
+-- (one of the many, many reasons I love PostgreSQL), either the
+-- entire migration has been applied, or none of it has.  Once it's
+-- been applied, the application immediately starts doing the new thing.
+--
+-- Much later, the migration can be changed to no longer be optional.
+-- At which point, newer versions of the application can be deployed
+-- which omit both the test for the optional migration, and the old
+-- way of doing things.
+--
+-- == Replaces
+--
+-- The \"code bloat\" of having the migrations in the code, in the
+-- executable, is considered to be minor.  Any database-accessing
+-- program is probably well into the tens of megabytes of executable
+-- size even without the migrations being included- an additional
+-- 10KB or 100KB of migration data isn't a big deal.  Text is small.
+-- Heck, the entire corpus of \"War and Peace\" comes in at only
+-- about 3MB (in unformatted text).
+--
+-- Never the less, a complex migration history makes it hard to
+-- understand what the current schema is.  This is where replaces
+-- comes in.  A migration can be marked that it replaces one or
+-- more other migrations.
+--
+-- Say you have a schema with multiple modifications, like:
+--
+-- @
+--  migrations :: [ Migration ]
+--  migrations = [
+--      makeMigration "users-1"
+--          [sql| CREATE TABLE users (
+--                      id SERIAL PRIMARY KEY,
+--                      name TEXT NOT NULL); |],
+--      makeMigration "users-2"
+--          [sql| ALTER TABLE users
+--                  ADD COLUMN password TEXT; |]
+--          \`addDependency\` "users-1",
+--      makeMigration "users-3"
+--          [sql| ALTER TABLE users
+--                  ADD COLUMN email TEXT; |]
+--          \`addDependency\` "users-2",
+--      makeMigration "users-4"
+--          [sql| ALTER TABLE users
+--                  ALTER COLUMN password SET NOT NULL; |]
+--          \`addDependency\` "users-3"
+--      ]
+-- @
+--
+-- This is a pretty simple example, compared to real-world cases.  But
+-- even here, it's somewhat difficult to keep track of what the users
+-- table current schema.  What we can do is replace the whole lift of
+-- migrations with a single migration that replaces all of them:
+--
+-- @
+--  migrations :: [ Migrations ]
+--  migrations = [
+--      makeMigration "users-5"
+--          [sql| CREATE TABLE users(
+--                  id SERIAL PRIMARY KEY,
+--                  name TEXT NOT NULL,
+--                  password TEXT NOT NULL,
+--                  email TEXT); |]
+--          \`addReplaces\` [
+--              makeReplaces "users-1"
+--                  "9wbC-yXz6ISXeA-eFOn-l4DVoJZ4P8I79HJxJKHIBIg=",
+--              makeReplaces "users-2"
+--                  "t_isz1eBAu8XM_e2idYdnCPvI-UFEpFC3s2RTyjArDA=",
+--              makeReplaces "users-3"
+--                  "wL4RJs17fjpSEvogt4RdoLk1LvfzfAZ2IVabbuwKOcE=",
+--              makeReplaces "users-4"
+--                  "F8_nmgURLqBjyQfKEOZAL4ugZhZxYyGPqPA3Rbtk3sI=" 
+--          ]
+--      ]
+-- @
+--
+-- This says that our new \"users-5\" migration replaces the old
+-- \"users-1\" through \"users-4\" migrations.
+--
+-- The \"9wbC-blahblahblah\" stuff is the fingerprint of the migration
+-- (the base-64 encoding of the SHA3-256 hash of the command).  This
+-- can be obtained either by calling the `makeFingerprint` command,
+-- or better yet getting the fingerprint out of the database.
+--
 module Database.PostgreSQL.Simple.Migrate (
     -- * Migration type
     Migration(..),
     Optional(..),
-    makeMigration,
     Replaces(..),
+
+    -- * Creating migrations
+    makeMigration,
     makeReplaces,
+
+    -- ** Migration modifiers
+    addDependency,
+    addDependencies,
+    setOptional,
+    setPhase,
+    addReplaces,
+
+    -- ** Replaces modifiers
+    setReplacesOptional,
+
+    -- * Applying migrations
     apply,
+
+    -- * Calculating fingerprints
+    --
+    -- | Useful for constructing `Replaces` structures.
+    --
     makeFingerprint
 ) where
 
