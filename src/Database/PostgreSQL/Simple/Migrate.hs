@@ -373,6 +373,7 @@ module Database.PostgreSQL.Simple.Migrate (
 
     -- * Applying migrations
     apply,
+    Verbose(..),
 
     -- * Calculating fingerprints
     --
