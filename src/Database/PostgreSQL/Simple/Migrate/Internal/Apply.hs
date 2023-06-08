@@ -16,7 +16,10 @@
 --
 module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
     Verbose(..),
-    apply
+    apply,
+    ApplyError(..),
+    formatApplyError,
+    applyBase
 ) where
 
     import           Control.DeepSeq                        (force)
@@ -36,6 +39,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
     import Database.PostgreSQL.Simple.Migrate.Internal.Finger
     import Database.PostgreSQL.Simple.Migrate.Internal.Order
     import Database.PostgreSQL.Simple.Migrate.Internal.Types
+    import Database.PostgreSQL.Simple.Migrate.Internal.Wrap
 
     -- | The verbosity level.
     --
@@ -54,6 +58,63 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
             -- | Also print out what database queries we are performing.
             | High
         deriving (Show, Read, Ord, Eq, Enum, Bounded)
+
+    -- | Errors that apply can return.
+    data ApplyError =
+        -- | No migrations in the list.
+        EmptyMigrationList
+
+        -- | orderMigrations returned an error.
+        | OrderError OrderMigrationsError
+
+        -- | There were migrations in the database not in the list.
+        | UnknownMigrations [ Text ]
+
+        -- | The fingerprint of the given migration didn't match what
+        -- was in the database.
+        | FingerprintMismatch Text
+
+        -- | Optional replaced migrations exist, when none of the
+        -- required replaced migrations did.
+        | ReplacedMigrations Text [ Text ]
+
+        -- | There were some required replaced migrations missing when
+        -- others exist.
+        | NoReplacedMigration Text Text
+
+        -- | The fingerprint of a replaced migration doesn't match what
+        -- is in the database.
+        | ReplacedFingerprint Text Text
+        deriving (Show)
+
+    -- | Convert an apply error into a string.
+    formatApplyError :: ApplyError -> String
+    formatApplyError  EmptyMigrationList =
+        "Empty migrations list"
+    formatApplyError (OrderError ome) = formatOrderMigrationsError ome
+    formatApplyError (UnknownMigrations nms) =
+        "The following migrations are listed in the database as having\
+        \ been applied, but are not in the list of migrations given to us:"
+        ++ (mconcat ((\s -> "\n    " ++ show s) <$> nms))
+        ++  "\n(Are you applying the wrong list of migrations to the\
+                \ wrong database?)"
+    formatApplyError (FingerprintMismatch nm) =
+        "The migration "
+        ++ show nm
+        ++ " does not match the fingerprint in the database."
+    formatApplyError (ReplacedMigrations nm nms) =
+        "The following migrations are still in the database, despite\
+        \ being replaced by the " ++ show nm ++ "migration:"
+        ++ (mconcat ((\s -> "\n     " ++ show s) <$> nms))
+    formatApplyError (NoReplacedMigration nm repl) =
+        "Migration " ++ show repl ++ ", which is being replaced by the\
+        \ migration " ++ show nm ++ " does not exist- it is a required\
+        \ replacement, and other required replaced migrations do exist."
+    formatApplyError (ReplacedFingerprint nm repl) =
+        "Migration " ++ show repl ++ " which is being replaced by the\
+        \ migration " ++ show nm ++ " does not match the fingerprint\
+        \ in the database."
+
 
     -- | Apply a set of migrations to a database.
     --
@@ -80,16 +141,27 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                 -- ^ True means all migrations were applied successfully.
                 --
                 -- False means a failure occurred.
-                
-    apply _       []    _        = do
-        putStrLn "Error: empty migrations list!"
-        pure False
-    apply verbose migs1 makeConn = do
+    apply verbose migs makeConn = do
+        r <- applyBase verbose migs makeConn
+        case r of
+            Nothing  -> pure True
+            Just err -> do
+                wrap ("Error: " ++ formatApplyError err) >>= putStrLn
+                pure False
+
+    -- | Internal code for `apply`.
+    --
+    -- Returns a `ApplyError` instead of printing out the error.  Useful
+    -- for internal testing.
+    applyBase :: Verbose
+                    -> [ Migration ]
+                    -> IO PG.Connection
+                    -> IO (Maybe ApplyError)
+    applyBase _       []    _        = pure $ Just EmptyMigrationList
+    applyBase verbose migs1 makeConn = do
         when (verbose >= Low) $ putStrLn "Ordering migrations."
         case orderMigrations migs1 of
-            Left err   -> do
-                putStrLn $ "Error: " ++ formatOrderMigrationsError err
-                pure False
+            Left err   -> pure $ Just (OrderError err)
             Right migs2 -> do
                 -- Do *all* the ordering work before opening the connection!
                 migs <- Exception.evaluate $ force migs2
@@ -103,23 +175,26 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                             putStrLn "Closing database connection."
                         pure r
                 when (verbose >= Low) $
-                    if r
-                    then putStrLn "Success."
-                    else putStrLn "Failed."
+                    case r of
+                        Nothing -> putStrLn "Success."
+                        Just _  -> putStrLn "Failed."
                 pure r
 
 
-    data AbortMigration = AbortMigration
+    data AbortMigration = AbortMigration ApplyError
         deriving (Show)
 
     instance Exception.Exception AbortMigration
 
-    applyMigrations :: Verbose -> [ Migration ] -> PG.Connection -> IO Bool
+    applyMigrations :: Verbose
+                        -> [ Migration ]
+                        -> PG.Connection
+                        -> IO (Maybe ApplyError)
     applyMigrations verbose migs conn = do
             r :: Either AbortMigration () <- Exception.try go
             case r of
-                Left AbortMigration -> pure False
-                Right ()            -> pure True
+                Left (AbortMigration err) -> pure $ Just err
+                Right ()                  -> pure Nothing
         where
             go :: IO ()
             go = do
@@ -209,23 +284,12 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                     (PG.Only (PG.In (migs >>= migNames)))
             case r of
                 [] -> pure ()
-                _  -> do
-                    putStrLn "Error: The following migrations have already\
-                                \ been applied but aren't"
-                    putStrLn "in our current list:"
-                    mapM_ formatName r
-                    putStrLn "(Are you applying the wrong set of\
-                                \ migrations to the wrong database?)"
-                    throw AbortMigration
-
+                _  -> throw . AbortMigration . UnknownMigrations $
+                        PG.fromOnly <$> r
         where
             migNames :: Migration -> [ Text ]
             migNames mig = CI.foldedCase <$>
                             (name mig : (rName <$> replaces mig))
-
-            formatName :: PG.Only Text -> IO ()
-            formatName (PG.Only nm) = putStrLn $ "    " ++ show nm
-
 
     applyAMigration :: Verbose -> PG.Connection -> Migration -> IO ()
     applyAMigration verbose conn mig = do
@@ -281,11 +345,8 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                         if (fprint == fingerprint)
                         then pure True
                         else do
-                            putStrLn $
-                                "Error: fingerprint of the migration "
-                                ++ show (CI.original (name mig))
-                                ++ " does not match entry in database!"
-                            throw AbortMigration
+                            throw . AbortMigration . FingerprintMismatch $
+                                CI.original (name mig)
 
             -- | Run this migration's command
             runCommand :: IO ()
@@ -304,7 +365,6 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
 
             -- | Make sure none of the replaced migrations exist
             --
-            -- Except.throwError if any do exist.
             ensureNoneExist :: [ Replaces ] -> IO ()
             ensureNoneExist rs = do
                 r :: [ PG.Only Text ]
@@ -315,17 +375,10 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                         (PG.Only . PG.In $ CI.foldedCase . rName <$> rs)
                 case r of
                     []  -> pure ()
-                    res -> do
-                        let formatName :: PG.Only Text -> IO ()
-                            formatName (PG.Only nm) =
-                                putStrLn $ "    " ++ show nm
-                        putStrLn "Error: the following migrations are\
-                                    \ still in the table despite being"
-                        putStrLn $ "replaced by the "
-                                        ++ show (CI.original (name mig))
-                                        ++ " migration:"
-                        mapM_ formatName res
-                        throw AbortMigration
+                    res -> throw . AbortMigration $
+                            ReplacedMigrations
+                                (CI.original (name mig))
+                                (PG.fromOnly <$> res)
 
             -- | Test to see if all the required replaced migrations exist.
             --
@@ -356,29 +409,21 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                 let repname :: Text
                     repname = CI.foldedCase (rName repl)
                 case Map.lookup repname fpmap of
-                    Nothing ->
+                    Nothing -> 
                         case (rOptional repl) of
                             Optional -> pure ()
                             Required -> do
-                                putStrLn $
-                                    "Error: Migration "
-                                    ++ show (CI.original (name mig))
-                                    ++ " is replacing migration "
-                                    ++ show (CI.original (rName repl))
-                                    ++ " which does not exist"
-                                    ++ " (despite other replaced migrations"
-                                    ++ " existing)"
-                                throw AbortMigration
+                                throw . AbortMigration $
+                                    NoReplacedMigration
+                                        (CI.original (name mig))
+                                        (CI.original (rName repl))
                     Just fprint
                         | fprint == (rFingerprint repl) -> pure ()
                         | otherwise                     -> do
-                            putStrLn $
-                                "Error: Migration "
-                                ++ show (CI.original (name mig))
-                                ++ " is replacing migration "
-                                ++ show (CI.original (rName repl))
-                                ++ " but fingerprints do not match,"
-                            throw AbortMigration
+                            throw . AbortMigration $
+                                ReplacedFingerprint 
+                                    (CI.original (name mig))
+                                    (CI.original (rName repl))
 
             -- | Delete all the migrations being replaced from the table.
             deleteReplaced :: [ Replaces ] -> IO ()

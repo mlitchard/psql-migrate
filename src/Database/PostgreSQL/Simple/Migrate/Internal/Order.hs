@@ -125,8 +125,6 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
         ++ " says that it replaces the migration " ++ show replacedName
         ++ ", but that migration still exists in the list."
 
-
-
     -- | Simple monad typedef.
     type M a = Either OrderMigrationsError a
 
