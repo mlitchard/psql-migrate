@@ -25,19 +25,22 @@
 --
 -- = Introduction
 --
--- == Migrations
+-- == __Migrations__
 --
 -- The core structure to this module is the `Migration`.  A migration is
--- just a structure with two required and several optional members.  The
--- two required members are the name of the migration and the command.
+-- a single change to the database to be applied atomically.  It has two
+-- required values- the name of the migration and the migration command-
+-- as well as several additional optional values.
 --
 -- The name of the migration is just a string, which uniquely identifies
 -- the migration.  The name should be unique in any set of changes.  It
 -- is used to both test whether the migration has been applied or not,
--- and to express dependencies between migrations.  The command is just
--- the SQL to be execute to apply the migration to a database, and is
--- a `Database.PostgreSQL.Simple.Query`.  We recommend using the
--- `Database.PostgreSQL.Simple.SqlQQ.sql` quasiquoter for convience.
+-- and to express dependencies between migrations.  
+--
+-- The command is just the SQL to be execute to apply the migration to
+-- a database, and is a `Database.PostgreSQL.Simple.Query`.  We recommend
+-- using the `Database.PostgreSQL.Simple.SqlQQ.sql` quasiquoter for
+-- convience.
 --
 -- To make declaring migrations simple, we supply the `makeMigration`
 -- function.  This takes a name and command to execute, making a
@@ -64,9 +67,14 @@
 -- that `addDependency` and `setPhase` are just functions that modify
 -- the migration created by `makeMigration`.
 --
--- == Schema in Code
+-- Once we have a list of migrations, we can apply them to a database
+-- using the `apply` function, of check to ensure they have been
+-- applied using the `check` function.
 --
--- The huge advantage of migrations being just plain Haskell structures
+-- == __Schema in Code__
+--
+-- The key concept here is that a Migration is just a plain Haskell
+-- structure.  The huge advantage of migrations being just structures
 -- is that the migrations can live in the source code, next to the
 -- functions and data structures which use that schema.  For example,
 -- we might have a user module defined like:
@@ -93,13 +101,24 @@
 -- Keeping the schema next to the code that uses it makes it significantly
 -- easier to keep both in sync.
 --
--- == Applying Migrations
+-- The order the migrations appear in the list does not matter.  So, when
+-- we `apply` the migrations to a database or `check` if they have been
+-- applied, we can just concatenate all the individual migration lists
+-- together.
 --
--- TODO: write this
+-- @
+--      allMigrations :: [ Migration ]
+--      allMigrations = User.migrations
+--                      ++ Message.migrations
+--                      ++ Whatever.migrations
+--                      ++ ...
 --
--- = Nifty Features
+--      doApply :: IO ()
+--      doApply = do
+--          apply 
+-- @
 --
--- == Explicit Dependencies
+-- == __Explicit Dependencies__
 --
 -- This library supplies an `apply` function, which takes a database
 -- connection (or at least a way to construct one) and a list of
@@ -163,42 +182,7 @@
 -- Here, the user-2 migration explicitly depends upon the user-1 migration-
 -- and `apply` will ensure that user-1 is applied first.
 --
--- == Phases
---
--- Dependencies are the primary way to order migrations.  But some
--- times, some migrations just want to happen before or after everything
--- else.  For example, you might want to create a dbtype table, labelling
--- the database as production, test, or development:
---
--- @
---  migrations :: [ Migration ]
---  migrations = [
---      makeMigration "dbtype-1"
---          [sql| CREATE TABLE dbtype(
---                  only_row BOOL PRIMARY KEY
---                              DEFAULT TRUE,
---                  dbtype TEXT NOT NULL,
---                  CONSTRAINT only_one_row
---                      CHECK (only_row); |]
---          \`setPhase\` 0,
---      makeMigration "db-type-insert-1"
---          [sql| INSERT INTO dbtype(dbtype)
---                  VALUES(\'development\'); |]
---          \`addDependency\` "dbtype-1"
---          \`setPhase\` 0
---      ]
--- @
---
--- We want these migrations to run first, before everything else.  We
--- could just add a dependency to \"db-type-insert-1\" to every other
--- constraint, or we could use phases.
---
--- Every migration has a phase.  By default, `makeMigration` sets this
--- phase to 1, which is generally correct.  The rule is: every migration
--- of phase N happens before any migration of phase N+1 happens.  So
--- by setting these migrations to be phase 0, they will happen \"first\".
---
--- == Optional
+-- == __Optional__
 --
 -- There is a chicken or the egg problem in applying new migrations
 -- to a database that is actively being used.  Do you update the program
@@ -241,7 +225,7 @@
 -- which omit both the test for the optional migration, and the old
 -- way of doing things.
 --
--- == Replaces
+-- == __Replaces__
 --
 -- The \"code bloat\" of having the migrations in the code, in the
 -- executable, is considered to be minor.  Any database-accessing
@@ -314,6 +298,41 @@
 -- (the base-64 encoding of the SHA3-256 hash of the command).  This
 -- can be obtained either by calling the `makeFingerprint` command,
 -- or better yet getting the fingerprint out of the database.
+--
+-- == __Phases__
+--
+-- Dependencies are the primary way to order migrations.  But some
+-- times, some migrations just want to happen before or after everything
+-- else.  For example, you might want to create a dbtype table, labelling
+-- the database as production, test, or development:
+--
+-- @
+--  migrations :: [ Migration ]
+--  migrations = [
+--      makeMigration "dbtype-1"
+--          [sql| CREATE TABLE dbtype(
+--                  only_row BOOL PRIMARY KEY
+--                              DEFAULT TRUE,
+--                  dbtype TEXT NOT NULL,
+--                  CONSTRAINT only_one_row
+--                      CHECK (only_row); |]
+--          \`setPhase\` 0,
+--      makeMigration "db-type-insert-1"
+--          [sql| INSERT INTO dbtype(dbtype)
+--                  VALUES(\'development\'); |]
+--          \`addDependency\` "dbtype-1"
+--          \`setPhase\` 0
+--      ]
+-- @
+--
+-- We want these migrations to run first, before everything else.  We
+-- could just add a dependency to \"db-type-insert-1\" to every other
+-- constraint, or we could use phases.
+--
+-- Every migration has a phase.  By default, `makeMigration` sets this
+-- phase to 1, which is generally correct.  The rule is: every migration
+-- of phase N happens before any migration of phase N+1 happens.  So
+-- by setting these migrations to be phase 0, they will happen \"first\".
 --
 module Database.PostgreSQL.Simple.Migrate (
     -- * Migration type

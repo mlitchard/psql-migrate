@@ -528,24 +528,25 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
 
     -- | The verbosity level.
     --
-    -- How much detail to print out.  Used by
+    -- Passed to the logging function given to 
     -- `Database.PostgreSQL.Simple.Migrate.Internal.Apply.apply` and
     -- `Database.PostgreSQL.Simple.Migrate.Internal.Apply.check`.
+    -- Can be used to control much detail to print out or log.
     --
     data Verbose =
+            -- | Error messages and top level messages.
+            Low
 
-            -- | Only print out error messages.
-            Quiet
-
-            -- | The above plus print phase changes.
-            | Low
-
-            -- | Both of the above plus print which migrations we are applying
+            -- | Phase change messages.
             | Medium
 
-            -- | All of the above plus print what database queries we
-            -- are performing.
+            -- | Which migrations we are applying
             | High
+
+            -- | What database queries we are performing.
+            --
+            -- Also opening and closing database connections.
+            | Detail
         deriving (Show, Read, Ord, Eq, Enum, Bounded)
 
 

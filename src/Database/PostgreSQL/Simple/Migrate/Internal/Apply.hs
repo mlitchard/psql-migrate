@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE QuasiQuotes         #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -26,6 +27,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
     import           Data.Int                               (Int64)
     import           Data.Map.Strict                        (Map)
     import qualified Data.Map.Strict                        as Map
+    import           Data.String
     import           Data.Text                              (Text)
     import qualified Database.PostgreSQL.Simple             as PG
     import           Database.PostgreSQL.Simple.SqlQQ
@@ -45,8 +47,14 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
     -- error, the error printed and the application of migrations
     -- is halted.
     --
-    apply :: Verbose
-                -- ^ What messages to print out
+    apply :: forall logmsg .
+                (IsString logmsg
+                , Semigroup logmsg)
+
+                => (Verbose -> logmsg -> IO ())
+                -- ^ How to print out status messages.
+                --
+                -- This allows for fancy loging.
 
                 -> [ Migration ]
                 -- ^ The list of migrations to apply.
@@ -74,12 +82,12 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                 --
                 -- mtl stack.
                 --
-    apply _       []    _        = pure $ Left EmptyMigrationList
-    apply verbose migs1 makeConn = runM go verbose
+    apply _      []    _        = pure $ Left EmptyMigrationList
+    apply logmsg migs1 makeConn = runM go logmsg
         where
-            go :: M ()
+            go :: M logmsg ()
             go = do
-                mprint Low "Ordering migrations."
+                logM Low "Ordering migrations."
                 case checkMigrations migs1 of
                     Left err       -> throwM err
                     Right miggraph -> do
@@ -93,9 +101,9 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                         -- Make the connection and apply the migrations
                         withConn makeConn (go2 migs)
 
-            go2 :: [ Migration ] -> PG.Connection -> M ()
+            go2 :: [ Migration ] -> PG.Connection -> M logmsg ()
             go2 migs conn = do
-                mprint Medium "Initializing database if necessary."
+                logM Low "Initializing database if necessary."
                 withTransactionLevelM PG.Serializable conn $ do
                     b <- isInitialized conn
                     when (not b) $ initialize conn
@@ -103,8 +111,26 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                 xmigs <- getExistingMigrations conn
                 case checkExistingMigrations xmigs migs of
                     Left err     -> throwM err
-                    Right needed ->
-                        mapM_ (applyMigration conn) needed
+                    Right needed -> do
+                        logM Low "Applying migrations."
+                        doApplies Nothing conn needed
+
+            doApplies :: Maybe Int
+                            -> PG.Connection
+                            -> [ Migration ]
+                            -> M logmsg ()
+            doApplies _        _    []       = pure ()
+            doApplies Nothing  conn (m : ms) = do
+                logM Medium $ "Starting phase "
+                                <> (fromString (show (phase m)))
+                applyMigration conn m
+                doApplies (Just (phase m)) conn ms
+            doApplies (Just p) conn (m : ms) = do
+                when (p < phase m) $
+                    logM Medium $ "Starting phase "
+                                    <> (fromString (show (phase m)))
+                applyMigration conn m
+                doApplies (Just (phase m)) conn ms
 
 
     -- | Check that a set of migrations has been applied to a database.
@@ -118,8 +144,14 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
     -- error, the error printed and the application of migrations
     -- is halted.
     --
-    check :: Verbose
-                -- ^ What messages to print out
+    check :: forall logmsg .
+                (IsString logmsg
+                , Semigroup logmsg)
+
+                => (Verbose -> logmsg -> IO ())
+                -- ^ How to print out status messages.
+                --
+                -- This allows for fancy loging.
 
                 -> [ Migration ]
                 -- ^ The list of migrations to check.
@@ -148,21 +180,21 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                 --
                 -- mtl stack.
                 --
-    check _       []    _        = pure $ Left EmptyMigrationList
-    check verbose migs makeConn = runM go verbose
+    check _      []    _        = pure $ Left EmptyMigrationList
+    check logmsg migs makeConn = runM go logmsg
         where
-            go :: M ()
+            go :: M logmsg ()
             go = do
-                mprint Low "Ordering migrations."
+                logM Low "Ordering migrations."
                 case checkMigrations migs of
                     Left err -> throwM err
                     Right _  -> do
                         -- Make the connection and check the migrations
                         withConn makeConn go2
 
-            go2 :: PG.Connection -> M ()
+            go2 :: PG.Connection -> M logmsg ()
             go2 conn = do
-                mprint Medium "Checking if database is initialized."
+                logM Low "Checking if database is initialized."
                 b <- isInitialized conn
                 if (not b)
                 then throwM Uninitialized
@@ -175,17 +207,26 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                                 [] -> pure ()
                                 xs -> throwM (MissingRequireds xs)
 
-    withConn :: IO PG.Connection -> (PG.Connection -> M a) -> M a
+    withConn :: forall logmsg a .
+                (IsString logmsg
+                , Semigroup logmsg)
+                => IO PG.Connection
+                -> (PG.Connection -> M logmsg a)
+                -> M logmsg a
     withConn makeConn act = do
-            mprint High "Opening database connection."
+            logM Detail "Opening database connection."
             bracketM (liftM makeConn) doClose act
         where
-            doClose :: PG.Connection -> M ()
+            doClose :: PG.Connection -> M logmsg ()
             doClose conn = do
-                mprint High "Closing database connection."
+                logM Detail "Closing database connection."
                 liftM $ PG.close conn
 
-    isInitialized :: PG.Connection -> M Bool
+    isInitialized :: forall logmsg .
+                        (IsString logmsg
+                        , Semigroup logmsg)
+                        => PG.Connection
+                        -> M logmsg Bool
     isInitialized conn = do
         r1 :: [ PG.Only Bool ]
             <- myQuery_ conn
@@ -200,7 +241,11 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                 (PG.Only True) : _ -> True
                 _                  -> False
 
-    initialize :: PG.Connection -> M ()
+    initialize :: forall logmsg .
+                    (IsString logmsg
+                    , Semigroup logmsg)
+                    => PG.Connection
+                    -> M logmsg ()
     initialize conn = do
         myExecute_ conn
             [sql|
@@ -215,7 +260,11 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                 CREATE INDEX ON schema_migrations(executed_at);
             |]
 
-    getExistingMigrations :: PG.Connection -> M (Map Text Text)
+    getExistingMigrations :: forall logmsg .
+                                (IsString logmsg
+                                , Semigroup logmsg)
+                                => PG.Connection
+                                -> M logmsg (Map Text Text)
     getExistingMigrations conn = do
         r :: [ (Text, Text) ]
             <- myQuery_ conn
@@ -378,10 +427,15 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
             existsRequired RequiredExists        rs =
                 loop RequiredExists rs
 
-    applyMigration :: PG.Connection
+    applyMigration :: forall logmsg .
+                        (IsString logmsg
+                        , Semigroup logmsg)
+                        => PG.Connection
                         -> Migration
-                        -> M ()
-    applyMigration conn mig = 
+                        -> M logmsg ()
+    applyMigration conn mig = do
+        logM High $ "Applying migration "
+                        <> (fromString (show (CI.original (name mig))))
         -- Note that we don't need to check for any errors, we can just
         -- plow ahead.
         withTransactionLevelM PG.Serializable conn $ do
@@ -405,44 +459,49 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
             pure ()
 
 
-    logQuery :: (PG.ToRow q)
+    logQuery :: forall q logmsg .
+                    (IsString logmsg
+                    , Semigroup logmsg
+                    , PG.ToRow q)
                     => PG.Connection
                     -> PG.Query
                     -> q
-                    -> M ()
+                    -> M logmsg ()
     logQuery conn qry q = do
-        verbose <- askM
-        liftM $
-            when (verbose >= High) $ do
-                bs <- PG.formatQuery conn qry q
-                putStrLn $ "Executing: " ++ show bs
+        bs <- liftM $ PG.formatQuery conn qry q
+        logM Detail $ "Executing: " <> fromString (show bs)
 
-    myQuery_ :: (PG.FromRow r)
+    myQuery_ :: forall r logmsg .
+                (IsString logmsg
+                , Semigroup logmsg
+                , PG.FromRow r)
                 => PG.Connection
                 -> PG.Query
-                -> M [ r ]
+                -> M logmsg [ r ]
     myQuery_ conn qry = do
         logQuery conn qry ()
         liftM $ PG.query_ conn qry
 
-    myExecute :: (PG.ToRow q)
+    myExecute :: forall q logmsg .
+                    (IsString logmsg
+                    , Semigroup logmsg
+                    , PG.ToRow q)
                     => PG.Connection
                     -> PG.Query
                     -> q
-                    -> M Int64
+                    -> M logmsg Int64
     myExecute conn qry q = do
         logQuery conn qry q
         liftM $ PG.execute conn qry q
 
-    myExecute_ :: PG.Connection -> PG.Query -> M ()
+    myExecute_ :: forall logmsg .
+                    (IsString logmsg
+                    , Semigroup logmsg)
+                    => PG.Connection
+                    -> PG.Query
+                    -> M logmsg ()
     myExecute_ conn qry = do
         logQuery conn qry ()
         _ <- liftM $ PG.execute_ conn qry
         pure ()
-
-    -- | Maybe print a line of output.
-    mprint :: Verbose -> String -> M ()
-    mprint lvl str = do
-        v <- askM
-        when (v >= lvl) $ liftM $ putStrLn str
 

@@ -22,7 +22,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Monad (
     M,
     runM,
     liftM,
-    askM,
+    logM,
     throwM,
     bracketM,
     withTransactionLevelM,
@@ -57,18 +57,18 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Monad (
     -- It is used in
     -- `Database.PostgreSQL.Simple.Migrate.Internal.Apply.apply`.
     --
-    newtype M a = M { 
+    newtype M logmsg a = M { 
         -- | Run a M monad.
-        runM :: Verbose -> IO (Either MigrationsError a) }
+        runM :: (Verbose -> logmsg -> IO ()) -> IO (Either MigrationsError a) }
 
-    instance Functor M where
+    instance Functor (M logmsg) where
         fmap f m = M $ \v -> (fmap . fmap) f (runM m v)
 
-    instance Applicative M where
+    instance Applicative (M logmsg) where
         pure a = M $ \_ -> pure $ Right a
         (<*>) = ap
 
-    instance Monad M where
+    instance Monad (M logmsg) where
         return = pure
 
         m >>= f = M $ \v -> do
@@ -78,38 +78,48 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Monad (
                         Right a  -> runM (f a) v
 
     -- | Our version of liftIO.
-    liftM :: forall a . IO a -> M a
+    liftM :: forall a logmsg . IO a -> M logmsg a
     liftM io = M $ \_ -> Right <$> io
 
-    -- | Our version of ReaderT's ask.
-    askM :: M Verbose
-    askM = M $ \v -> pure $ Right v
+    -- | Log a message.
+    logM :: forall logmsg . Verbose -> logmsg -> M logmsg ()
+    logM lvl msg = M $ \v -> do
+                                v lvl msg
+                                pure $ Right ()
 
     -- | Our version of ExceptT's throwError
-    throwM :: forall a . MigrationsError -> M a
+    throwM :: forall a logmsg . MigrationsError -> M logmsg a
     throwM err = M $ \ _ -> pure $ Left err
 
     type StM a = Either MigrationsError a
 
     -- | Our version of a lifted `bracket`.
-    bracketM :: forall a b c . M a -> (a -> M b) -> (a -> M c) -> M c
+    bracketM :: forall a b c logmsg .
+                    M logmsg a
+                    -> (a -> M logmsg b)
+                    -> (a -> M logmsg c)
+                    -> M logmsg c
     bracketM start stop act =
             M $ \v -> bracket (start' v) (stop' v) (act' v)
         where
-            start' :: Verbose -> IO (StM a)
+            start' :: (Verbose -> logmsg -> IO ()) -> IO (StM a)
             start' v = runM start v
 
-            stop' :: Verbose -> StM a -> IO (StM b)
+            stop' :: (Verbose -> logmsg -> IO ()) -> StM a -> IO (StM b)
             stop' _ (Left err) = pure $ Left err
             stop' v (Right a)  = runM (stop a) v
 
-            act' :: Verbose -> StM a -> IO (StM c)
+            act' :: (Verbose -> logmsg -> IO ()) -> StM a -> IO (StM c)
             act' _ (Left err) = pure $ Left err
             act' v (Right a)  = runM (act a) v
 
     -- | Our version of a lifted
     -- `Database.PostgreSQL.Simple.Transaction.withTransactionLevel`.
-    withTransactionLevelM :: PG.IsolationLevel -> PG.Connection -> M a -> M a
+    withTransactionLevelM :: forall logmsg a .
+                                PG.IsolationLevel
+                                -> PG.Connection
+                                -> M logmsg a
+                                -> M logmsg a
     withTransactionLevelM iso conn act =
         M $ \v -> PG.withTransactionLevel iso conn (runM act v)
 
