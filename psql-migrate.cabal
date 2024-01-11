@@ -26,7 +26,10 @@ source-repository head
 library
   exposed-modules:  Database.PostgreSQL.Simple.Migrate
                     , Database.PostgreSQL.Simple.Migrate.Internal.Apply
+                    , Database.PostgreSQL.Simple.Migrate.Internal.Error
                     , Database.PostgreSQL.Simple.Migrate.Internal.Finger
+                    , Database.PostgreSQL.Simple.Migrate.Internal.Monad
+                    , Database.PostgreSQL.Simple.Migrate.Internal.Opt
                     , Database.PostgreSQL.Simple.Migrate.Internal.Order
                     , Database.PostgreSQL.Simple.Migrate.Internal.Types
                     , Database.PostgreSQL.Simple.Migrate.Internal.Wrap

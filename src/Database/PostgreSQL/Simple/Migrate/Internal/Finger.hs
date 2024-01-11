@@ -15,7 +15,7 @@
 --
 
 module Database.PostgreSQL.Simple.Migrate.Internal.Finger (
-    makeFingerprint,
+    makeFingerprint
 ) where
 
     import qualified Crypto.Hash                      as Hash
@@ -26,16 +26,11 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Finger (
     import qualified Data.Text.Encoding               as Encoding
     import           Database.PostgreSQL.Simple.Types (Query (..))
 
-    -- This screws up the formatting, so they get their own,
-    -- unformatted, block.
-    import Database.PostgreSQL.Simple.Migrate.Internal.Types
-
-
-    -- | Calculate the fingerprint of a given migration.
-    makeFingerprint :: Migration -> Text
-    makeFingerprint mig =
+    -- | Calculate the fingerprint of a given migration command.
+    makeFingerprint :: Query -> Text
+    makeFingerprint cmd =
         let q :: ByteString
-            q = fromQuery (command mig)
+            q = fromQuery cmd
 
             dig :: Hash.Digest Hash.SHA3_256
             dig = Hash.hash q

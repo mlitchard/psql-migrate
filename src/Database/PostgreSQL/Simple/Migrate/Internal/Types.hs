@@ -24,7 +24,8 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     setOptional,
     setPhase,
     addReplaces,
-    setReplacesOptional
+    setReplacesOptional,
+    Verbose(..)
 ) where
 
     import           Control.DeepSeq
@@ -33,6 +34,8 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     import           Data.Text                        (Text)
     import           Database.PostgreSQL.Simple.Types (Query (..))
     import           GHC.Generics
+
+    import Database.PostgreSQL.Simple.Migrate.Internal.Finger;
 
     -- | Boolean-analog for whether a migration is optional or required.
     --
@@ -71,9 +74,9 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     -- @
     -- myMigration2 :: Migration
     -- myMiragtion2 = makeMigration "example-mig-2" [sql| ... |]
-    --                  `addDepedency` "example-mig-1"
-    --                  `setOptional` Optional
-    --                  `setPhase` 2
+    --                  \`addDependency\` "example-mig-1"
+    --                  \`setOptional\` Optional
+    --                  \`setPhase\` 2
     -- @
     --
     -- == Field Details
@@ -313,6 +316,9 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
         command :: Query,
         -- ^ The command to execute to perform the migration.  
 
+        fingerprint :: Text,
+        -- ^ The fingerprint (hash) of the command.
+
         dependencies :: [ CI Text ],
         -- ^ The list of the names of other migrations this migration
         -- depends upon.
@@ -325,7 +331,20 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
         
         replaces :: [ Replaces ]
         -- ^ The list of migrations this migration replaces.
-    } deriving (Show, Read, Ord, Eq, Generic)
+    } deriving (Show, Read, Generic)
+
+    -- | Eq on Migrations is defined by name only.
+    instance Eq Migration where
+        m1 == m2 = name m1 == name m2
+        m1 /= m2 = name m1 /= name m2
+
+    -- | Ord on Migrations is defined by name only.
+    instance Ord Migration where
+        compare m1 m2 = compare (name m1) (name m2)
+        m1 < m2 = name m1 < name m2
+        m1 > m2 = name m1 > name m2
+        m1 <= m2 = name m1 <= name m2
+        m1 >= m2 = name m1 >= name m2
 
     instance NFData Migration where
         rnf mig = rnf (name mig)
@@ -350,8 +369,8 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     --
     -- * The `replaces` field is set to @[]@ (the empty list).
     --
-    -- These fields can be overridden by the `setDependency`,
-    -- `setDependencies`, `setPhase`, `setOptional`, and
+    -- These fields can be overridden by the `addDependency`,
+    -- `addDependencies`, `setPhase`, `setOptional`, and
     -- `addReplaces` functions.
     --
     makeMigration :: Text
@@ -362,6 +381,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     makeMigration nm cmd = Migration {
                                 name         = CI.mk nm,
                                 command      = cmd,
+                                fingerprint  = makeFingerprint cmd,
                                 optional     = Required,
                                 phase        = 1,
                                 dependencies = [],
@@ -505,4 +525,27 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     --
     setReplacesOptional :: Replaces -> Optional -> Replaces
     setReplacesOptional repl opt = repl { rOptional = opt }
+
+    -- | The verbosity level.
+    --
+    -- How much detail to print out.  Used by
+    -- `Database.PostgreSQL.Simple.Migrate.Internal.Apply.apply` and
+    -- `Database.PostgreSQL.Simple.Migrate.Internal.Apply.check`.
+    --
+    data Verbose =
+
+            -- | Only print out error messages.
+            Quiet
+
+            -- | The above plus print phase changes.
+            | Low
+
+            -- | Both of the above plus print which migrations we are applying
+            | Medium
+
+            -- | All of the above plus print what database queries we
+            -- are performing.
+            | High
+        deriving (Show, Read, Ord, Eq, Enum, Bounded)
+
 

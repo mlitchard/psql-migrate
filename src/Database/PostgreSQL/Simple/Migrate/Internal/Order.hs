@@ -14,13 +14,16 @@
 -- module that is not also exported by the main module is subject
 -- to change without notice.
 --
+-- This module contains the things we can do without querying the
+-- database- including basic sanity checks and ordering of the
+-- migrations.
+--
 module Database.PostgreSQL.Simple.Migrate.Internal.Order (
-    orderMigrations,
-    OrderMigrationsError(..),
-    formatOrderMigrationsError
+    MigGraph,
+    checkMigrations,
+    orderMigrations
 ) where
 
-    import           Control.DeepSeq
     import           Data.CaseInsensitive (CI)
     import qualified Data.CaseInsensitive as CI
     import qualified Data.Foldable        as Foldable
@@ -35,98 +38,14 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
     import qualified Data.Set             as Set
     import           Data.Text            (Text)
     import qualified Data.Tree            as Tree
-    import           Data.Typeable
-    import           GHC.Generics
 
+    -- These screw up the formatting, so they get their own,
+    -- unformatted, block.
+    import Database.PostgreSQL.Simple.Migrate.Internal.Error
     import Database.PostgreSQL.Simple.Migrate.Internal.Types
 
-    -- | The possible errors `orderMigrations` can return.
-    --
-    -- This makes unit testing a heck of a lot easier and less brittle.
-    -- You can use `formatOrderMigrationsError` to convert this type
-    -- into a human-readable string.
-    data OrderMigrationsError =
-    
-        -- | Two (or more) migrations have the same name.
-        DuplicateMigrationName Text
-
-        -- | A migration lists the same dependency more than once.
-        | DuplicateDependency Text Text
-
-        -- | A migration has a dependency that isn't in the list.
-        | UnknownDependency Text Text
-
-        -- | A required migration depends upon an optional migration.
-        | RequiredDependsOnOptional Text Text
-
-        -- | A set of dependencies forms a cycle.
-        | CircularDependency (NonEmpty Text)
-
-        -- | Migration depends upon a migration in a later phase.
-        | LaterPhaseDependency Text Int Text Int
-
-        -- | All replacement migrations are optional
-        | NoRequiredReplacement Text
-
-        -- | The same migration is listed multiple times in replaces
-        | DuplicateReplaces Text Text
-
-        -- | Replaced migration still exists
-        | ReplacedStillExists Text Text
-
-        deriving (Show, Read, Ord, Eq, Generic, Typeable)
-
-    instance NFData OrderMigrationsError where
-        rnf (DuplicateMigrationName x)      = rnf x `seq` ()
-        rnf (DuplicateDependency x y)       = rnf x `seq` rnf y `seq` ()
-        rnf (UnknownDependency x y)         = rnf x `seq` rnf y `seq` ()
-        rnf (RequiredDependsOnOptional x y) = rnf x `seq` rnf y `seq` ()
-        rnf (CircularDependency xs)         = rnf xs `seq` ()
-        rnf (LaterPhaseDependency x i y j)  = rnf x `seq` rnf i
-                                                `seq` rnf y `seq` rnf j
-                                                `seq` ()
-        rnf (NoRequiredReplacement t)       = rnf t
-        rnf (DuplicateReplaces x y)         = rnf x `seq` rnf y `seq` ()
-        rnf (ReplacedStillExists t u)       = rnf t `seq` rnf u `seq` ()
-
-
-    -- | Convert an `OrderMigrationsError` into a human-readable string.
-    formatOrderMigrationsError :: OrderMigrationsError -> String
-    formatOrderMigrationsError (DuplicateMigrationName nm) =
-        "Two or more migrations share the name " ++ show nm
-    formatOrderMigrationsError (DuplicateDependency migName depName) =
-        "The migration " ++ show migName
-            ++ " has duplicate dependencies " ++ show depName
-    formatOrderMigrationsError (UnknownDependency migName depName) =
-        "The migration " ++ show migName
-            ++ " has a dependency " ++ show depName ++ " not in the list."
-    formatOrderMigrationsError (RequiredDependsOnOptional
-                                    reqMigName optMigName) =
-        "The required migration " ++ show reqMigName
-            ++ " depends upon the optional migration " ++ show optMigName
-    formatOrderMigrationsError (CircularDependency migs) =
-        "The following set of migrations form a dependency cycle: "
-        ++ show migs
-    formatOrderMigrationsError (LaterPhaseDependency
-                                    earlierMig earlierPhase
-                                    laterMig laterPhase) =
-        "The migration " ++ show earlierMig
-            ++ " in phase " ++ show earlierPhase
-            ++ " dependends upon the migration " ++ show laterMig
-            ++ " in phase " ++ show laterPhase
-    formatOrderMigrationsError (NoRequiredReplacement migName) =
-        "The migration " ++ show migName ++ " replaces other migrations,"
-            ++ " but has no required replacements"
-    formatOrderMigrationsError (DuplicateReplaces migName replName) =
-        "The migration " ++ show migName ++ " lists the migration "
-            ++ show replName ++ " in it's replaces list multiple times."
-    formatOrderMigrationsError (ReplacedStillExists migName replacedName) =
-        "The migration " ++ show migName
-        ++ " says that it replaces the migration " ++ show replacedName
-        ++ ", but that migration still exists in the list."
-
     -- | Simple monad typedef.
-    type M a = Either OrderMigrationsError a
+    type M a = Either MigrationsError a
 
     -- | The type of a key in the graph.
     type K = CI Text
@@ -161,40 +80,68 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
                 -- Returns Nothing if the key is not in the graph.
                 getVertex :: K -> Maybe Graph.Vertex }
 
+    -- | The shared data between `checkMigrations` and `orderMigrations`.
+    --
+    -- This allows `orderMigrations` to reuse work done by `checkMigrations`.
+    -- It also ensures that `checkMigrations` is called before
+    -- `orderMigrations` is.
+    --
+    newtype MigGraph = MigGraph { getZGraph :: IntMap Grph }
+
+    -- | Perform sanity checks on a migrations list.
+    --
+    -- These are all the check we can do on a migrations list that
+    -- don't require querying the database.  It returns a `MigGraph`,
+    -- the data required by `orderMigrations`.
+    --
+    checkMigrations :: [ Migration ] -> Either MigrationsError MigGraph
+    checkMigrations migs = do -- Either monad
+        -- Make the name -> migration map.
+        migMap :: MigMap <- makeMigMap migs
+
+        -- Check all the migrations for validity.
+        Map.foldr (checkMig migMap) (Right ()) migMap
+
+        -- Create the per-phase graphs
+        let zgrphs :: IntMap Grph
+            zgrphs = makeGraphs migMap
+
+        -- Check for cycles
+        mapM_ cycleCheck zgrphs
+
+        Right $ MigGraph zgrphs
+
+
+
     -- | Return a list of migrations in the order they can be applied in.
     --
-    -- Also check all the invariants we can.
+    -- Required a `MigGraph`, which can be obtained by calling
+    -- `checkMigrations`.
     --
-    orderMigrations :: [ Migration ]
-                        -> Either OrderMigrationsError [ Migration ]
-    orderMigrations migs = do -- Either monad
-            -- Make the name -> migration map.
-            migMap :: MigMap <- makeMigMap migs
+    -- The `checkMigrations` function was split out of this function
+    -- because we don't need to order the migrations in the
+    -- `Database.PostgreSQL.Simple.Migrate.Internal.Apply.check`
+    -- function.
+    --
+    orderMigrations :: MigGraph -> [ Migration ]
+    orderMigrations miggraph =
+        -- Do the topsorts
+        let zgrphs :: IntMap Grph
+            zgrphs = getZGraph miggraph
 
-            -- Check all the migrations for validity.
-            Map.foldr (checkMig migMap) (Right ()) migMap
+            grs1 :: [ (Int, Grph) ]
+            grs1 = IntMap.toAscList zgrphs
 
-            -- Create the per-phase graphs
-            let zgrphs :: IntMap Grph
-                zgrphs = makeGraphs migMap
+            grs2 :: [ Grph ]
+            grs2 = snd <$> grs1
 
-            -- Check for cycles
-            mapM_ cycleCheck zgrphs
+            grs3 :: [ [ Migration ] ]
+            grs3 = tsort <$> grs2
 
-            -- Do the topsorts
-            let grs1 :: [ (Int, Grph) ]
-                grs1 = IntMap.toAscList zgrphs
+            grs4 :: [ Migration ]
+            grs4 = concat grs3
 
-                grs2 :: [ Grph ]
-                grs2 = snd <$> grs1
-
-                grs3 :: [ [ Migration ] ]
-                grs3 = tsort <$> grs2
-
-                grs4 :: [ Migration ]
-                grs4 = concat grs3
-
-            pure grs4
+        in grs4
 
     -- | Do a topological sort of a graph.
     tsort :: Grph -> [ Migration ]
@@ -397,7 +344,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
                     addNode node (Just nmap) =
                         Just $ Map.insert (getKey node) node nmap
 
-    -- | Check a `Grph` for cycles.
+    -- | Check a Grph for cycles.
     --
     -- Note: we only check for intra-phase cycles, cycles within a single
     -- phase.  Intra-phase cycles, cycles that involve multiple different
@@ -431,18 +378,18 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
                 CI.original (getKey node)
 
 
-    -- | Convert a tuple to a `Node` structure.
+    -- | Convert a tuple to a Node structure.
     toNode :: (Migration, K, [ K ]) -> Node
     toNode (m, k, es) = Node {  getMigration = m,
                                 getKey = k,
                                 getEdges = es }
 
-    -- | Convert a `Node` structure back into a tuple.
+    -- | Convert a Node structure back into a tuple.
     fromNode :: Node -> (Migration, K, [ K ])
     fromNode node = (getMigration node, getKey node, getEdges node)
 
 
-    -- | Convert a tuple to a `Grph` structure.
+    -- | Convert a tuple to a Grph structure.
     toGrph :: (Graph.Graph,
                     Graph.Vertex -> (Migration, K, [ K ]),
                     K -> Maybe Graph.Vertex)
