@@ -16,9 +16,7 @@
 --
 module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
     apply,
-    applyBase,
-    check,
-    checkBase
+    check
 ) where
 
     import           Control.DeepSeq                        (force)
@@ -39,7 +37,6 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
     import Database.PostgreSQL.Simple.Migrate.Internal.Monad
     import Database.PostgreSQL.Simple.Migrate.Internal.Order
     import Database.PostgreSQL.Simple.Migrate.Internal.Types
-    import Database.PostgreSQL.Simple.Migrate.Internal.Wrap
 
     -- | Apply a set of migrations to a database.
     --
@@ -62,41 +59,23 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                 -- the function exits (even if it exits by throwing an
                 -- exception).
 
-                -> IO Bool
-                -- ^ True means all migrations were applied successfully.
+                -> IO (Either MigrationsError ())
+                -- ^ Returns a `MigrationsError` if there was an error.
                 --
-                -- False means a failure occurred.
-    apply verbose migs makeConn = do
-        r <- applyBase verbose migs makeConn
-        case r of
-            Nothing  -> do
-                putStrLn "Success."
-                pure True
-            Just err -> do
-                wrap ("Error: " ++ formatMigrationsError err) >>= putStrLn
-                putStrLn "Failure."
-                pure False
-
-    -- | Maybe print a line of output.
-    mprint :: Verbose -> String -> M ()
-    mprint lvl str = do
-        v <- askM
-        when (v >= lvl) $ liftM $ putStrLn str
-
-    -- | Internal code for `apply`.
-    --
-    -- Returns a `MigrationsError` instead of printing out the error.  Useful
-    -- for internal testing.
-    applyBase :: Verbose
-                    -> [ Migration ]
-                    -> IO PG.Connection
-                    -> IO (Maybe MigrationsError)
-    applyBase _       []    _        = pure $ Just EmptyMigrationList
-    applyBase verbose migs1 makeConn = do
-            r :: Either MigrationsError () <- runM go verbose
-            case r of
-                Left err -> pure $ Just err
-                Right () -> pure Nothing
+                -- Use 
+                -- `Database.PostgreSQL.Simple.Migrate.formatMigrationsError`
+                -- to convert an error to a printable string.
+                --
+                -- Done this way so that it's easy to cast to an:
+                --
+                -- @
+                -- ExceptT MigrationsError IO ()
+                -- @
+                --
+                -- mtl stack.
+                --
+    apply _       []    _        = pure $ Left EmptyMigrationList
+    apply verbose migs1 makeConn = runM go verbose
         where
             go :: M ()
             go = do
@@ -127,6 +106,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                     Right needed ->
                         mapM_ (applyMigration conn) needed
 
+
     -- | Check that a set of migrations has been applied to a database.
     --
     -- This function is similar to `apply`, except that no migrations
@@ -152,31 +132,24 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                 -- the function exits (even if it exits by throwing an
                 -- exception).
 
-                -> IO Bool
-                -- ^ True means the database is consistant with the
-                -- set of migrations.
-    check verbose migs makeConn = do
-        r <- checkBase verbose migs makeConn
-        case r of
-            Nothing  -> pure True
-            Just err -> do
-                wrap ("Error: " ++ formatMigrationsError err) >>= putStrLn
-                pure False
-
-    -- | Internal code for `check`.
-    --
-    -- Returns a `MigrationsError` instead of printing out the error.  Useful
-    -- for internal testing.
-    checkBase :: Verbose
-                    -> [ Migration ]
-                    -> IO PG.Connection
-                    -> IO (Maybe MigrationsError)
-    checkBase _       []    _        = pure $ Just EmptyMigrationList
-    checkBase verbose migs makeConn = do
-            r <- runM go verbose
-            case r of
-                Left err -> pure $ Just err
-                Right () -> pure Nothing
+                -> IO (Either MigrationsError ())
+                -- ^ Returns a MigrationsError if the database is not
+                -- consistent with the given list of migrations.
+                --
+                -- Use 
+                -- `Database.PostgreSQL.Simple.Migrate.formatMigrationsError`
+                -- to convert an error to a printable string.
+                --
+                -- Done this way so that it's easy to cast to an:
+                --
+                -- @
+                -- ExceptT MigrationsError IO ()
+                -- @
+                --
+                -- mtl stack.
+                --
+    check _       []    _        = pure $ Left EmptyMigrationList
+    check verbose migs makeConn = runM go verbose
         where
             go :: M ()
             go = do
@@ -466,4 +439,10 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
         logQuery conn qry ()
         _ <- liftM $ PG.execute_ conn qry
         pure ()
+
+    -- | Maybe print a line of output.
+    mprint :: Verbose -> String -> M ()
+    mprint lvl str = do
+        v <- askM
+        when (v >= lvl) $ liftM $ putStrLn str
 

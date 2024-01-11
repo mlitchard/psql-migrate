@@ -57,7 +57,9 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Monad (
     -- It is used in
     -- `Database.PostgreSQL.Simple.Migrate.Internal.Apply.apply`.
     --
-    newtype M a = M { runM :: Verbose -> IO (Either MigrationsError a) }
+    newtype M a = M { 
+        -- | Run a M monad.
+        runM :: Verbose -> IO (Either MigrationsError a) }
 
     instance Functor M where
         fmap f m = M $ \v -> (fmap . fmap) f (runM m v)
@@ -125,8 +127,10 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Monad (
     -- It is used by
     -- `Database.PostgreSQL.Simple.Migrate.Internal.Apply.check`.
     --
-    newtype N a = N { runN :: Map Text Text
-                            -> Either MigrationsError (Map Text Text, a) }
+    newtype N a = N { 
+        -- | Run an N monad.
+        runN :: Map Text Text
+                    -> Either MigrationsError (Map Text Text, a) }
 
     instance Functor N where
         fmap f n = N $ \s -> (fmap . fmap) f (runN n s)
