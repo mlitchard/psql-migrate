@@ -57,280 +57,90 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     -- is a SQL script, generally one or more schema modification commands
     -- like CREATE TABLE.
     --
-    -- You create a Migration with the makeMigration command, which
-    -- fills in sensible default values for most of the fields:
+    -- You create a Migration with the
+    -- `Database.PostgreSQL.Simple.Migrate.makeMigration` command, which
+    -- fills in sensible default values for most of the fields, and
+    -- then modify it with one or more of the modifier functions
+    -- `Database.PostgreSQL.Simple.Migrate.addDependency`,
+    -- `Database.PostgreSQL.Simple.Migrate.addDependencies`,
+    -- `Database.PostgreSQL.Simple.Migrate.setOptional`,
+    -- `Database.PostgreSQL.Simple.Migrate.setPhase`, and
+    -- `Database.PostgreSQL.Simple.Migrate.addReplaces`.  For example:
     --
     -- @
     -- {-# LANGUAGE QuasiQuotes #-}
     --
     -- import Database.PostgreSQL.Simple.SqlQQ
     --
-    -- myMigration :: Migration
-    -- myMigration = makeMigration "example-mig-1" [sql| ... |]
-    -- @
-    --
-    -- You can then override parameters with the various update functions:
-    --
-    -- @
-    -- myMigration2 :: Migration
-    -- myMiragtion2 = makeMigration "example-mig-2" [sql| ... |]
-    --                  \`addDependency\` "example-mig-1"
-    --                  \`setOptional\` Optional
-    --                  \`setPhase\` 2
-    -- @
-    --
-    -- == Field Details
-    --
-    -- The details of the specific fields are as follows:
-    --
-    -- ==== __name__
-    --
-    -- The name of the migration.
-    --
-    -- All migrations need to be unique.  It customary to add a
-    -- version number on to the end of the name, for example
-    -- \"example-mig-1\", \"example-mig-2\", etc.  This tells
-    -- the human reader that these migrations are related.  It
-    -- is an error for two migrations to have the same name.
-    --
-    -- Note that names are case INSENSITIVE, so "foo", "Foo", and
-    -- "FOO" are all considered the same name.
-    --
-    -- This value is passed to `makeMigration` as it's first argument.
-    --
-    -- ==== __command__
-    --
-    -- The command to execute to perform the migration.  
-    --
-    -- This query is passed to `Database.PostgreSQL.Simple.execute_`.
-    -- Note that no arguments are allowed (execute_ is called,
-    -- not execute).
-    --
-    -- This value is passed to `makeMigration` as it's second argument.
-    --
-    -- ==== __dependencies__
-    --
-    -- The list of the names of other migrations this migration
-    -- depends upon.
-    --
-    -- We want to spread the list of migrations out to many
-    -- different modules.  This way, the migrations that control
-    -- the database schema live near the code that accesses
-    -- them.  The question then becomes how to order the migrations?
-    --
-    -- The solution is to just list the other migrations this
-    -- migration depends upon.  We can then do a topological
-    -- sort, which will give us an order we can apply the
-    -- migrations in- guaranteeing that no migration will be
-    -- applied before it's dependencies.
-    --
-    -- The following conditions are all errors:
-    --
-    -- * For a migration to depend upon a migration in a later phase
-    -- (the same phase is OK, just not later).
-    --
-    -- * For any sequence of migrations to form a cycle (i.e. 
-    -- A depends upon B, which depends upon C, which depends upon A).
-    --
-    -- * For a migration to depend upon an unknown dependency.
-    --
-    -- * For the same migration to appear multiple times in the list.
-    -- Note that names are compared case INSENSITIVE, so having
-    -- \"foo\" and \"Foo\" both is an error.  
-    --
-    -- * For a migration marked as Required to depend upon a
-    -- migration marked as Optional.
-    --
-    -- `makeMigration` sets this value to @[]@ (the empty list).
-    -- It can be set using the `addDependency` or `addDependencies`
-    -- functions.
-    --
-    -- ==== __optional__
-    --
-    -- Whether the migration is optional.
-    --
-    -- The idea here is that the server can be aware of migrations that
-    -- are coming, but may not have been applied yet.  The server can
-    -- then test the database to see if the migration has been applied
-    -- or not, and response appropriately.  The server can also check
-    -- on start up if all the required migrations have been applied.
-    --
-    -- This solves the chicken and the egg problem for applying new
-    -- schema changes.  You first deploy a new server that has the
-    -- new migration as optional.  Once all the servers have been
-    -- redeployed, you then apply the new migration.  At some later
-    -- date, the optional migration can then be marked as required.
-    -- 
-    -- `makeMigration` sets this field to `Required`.  It can be
-    -- set using the `setOptional` function.
-    --
-    -- ==== __phase__
-    --
-    -- The phase to apply the migration in.
-    --
-    -- All migrations of phase N will be applied before any
-    -- migrations of phase N+1 are applied.  Basically,
-    -- all migrations of phase N+1 have a dependency on all
-    -- migrations of phase N and all previous phases.  This
-    -- gives us a crude way to say a given migration should
-    -- be applied earlier or later than broad categories of
-    -- other migrations, without having to directly depend
-    -- upon them.
-    --
-    -- Note that this only covers the migrations being applied
-    -- currently- it is possible that a previous execution
-    -- applied a migration of a later phase, than the migration
-    -- currently being applied.
-    --
-    -- 0, -1, etc., are valid phases.  Not all phases need to
-    -- have migrations.  So, for example,  you can have migrations
-    -- in phases -1, 0, 1, and 100, and that's OK- phases 2 through
-    -- 99 just don't have any migrations in them.
-    --
-    -- `makeMigration` sets this field to 1.  It can be set using
-    -- the `setPhase` function.
-    --
-    -- ==== __replaces__
-    --
-    -- The list of migrations this migration replaces.
-    --
-    -- As a database schema evolves, an increasing number of
-    -- migrations are fixes or changes to previous migrations
-    -- instead of de novo creations (\"ALTER TABLE\" migrations
-    -- instead of \"CREATE TABLE\" migrations).  This slows down
-    -- applying migrations, and makes it hard to determine what
-    -- the current schema actually is, given the list of migrations.
-    --
-    -- `replaces` is the solution to this.  It marks the migration
-    -- as the equivalent of having applied some list of previous
-    -- migrations.  When a migration has a non-empty @replaces@ field,
-    -- applying it now works like:
-    --
-    -- (1) Check to see if the migration has already been applied,
-    -- i.e. if it is in the table of applied migrations.  If it has
-    -- been applied, do nothing.
-    --
-    -- (2) Check to see if all of the replaced migrations
-    -- exist.  If they do, remove all of them from the table of 
-    -- applied migrations, and add this migration- without executing
-    -- the command.
-    --
-    -- (3) Otherwise, run the command and add this migration to the
-    -- table of applied migrations.
-    --
-    -- __WARNING__: The assumption is that the command, when executed,
-    -- will result the same schema as the aggregate result of applying
-    -- all the replaced migrations.  For obvious reasons this condition
-    -- is not checked for.  Violating it, however, will result in tears
-    -- and recriminations.  Use this feature at your own risk.
-    --
-    -- Replaced migrations have their fingerprints checked, to make
-    -- sure that we are replacing the migrations we think we are
-    -- replacing.  You can get the fingerprint for a given migration
-    -- by calling the `makeFingerprint` function, or by running
-    -- the following query on a database that has the migration
-    -- applied:
-    --
-    -- @
-    -- SELECT
-    --      fingerprint
-    -- FROM
-    --      schema_migrations
-    -- WHERE
-    --      name = 'example-mig-1'
-    -- ;
-    -- @
-    --
-    -- Replaced migrations can be marked as optional.  This means that
-    -- the replaced migration does not have to have been applied (yet)
-    -- for the replacement to take place.  If the optional replaced
-    -- migration has been applied, it's fingerprint still has to be
-    -- the same, and it will be removed with the other replaced migrations.
-    --
-    -- The following conditions are all errors:
-    --
-    -- * If a replaced migration exists but has a different fingerprint.
-    --
-    -- * If some required migrations exist, and others do not.
-    --
-    -- * If there are only optional replaced migrations.  Not replacing
-    -- any migrations is fine, as is having just one required replaced
-    -- migration.  But if you are replacing migrations, you have to
-    -- have at least one required replaced migration (this is so we can
-    -- affirmitively tell if the replacement is happening).
-    --
-    -- * If any of the replaced migrations are still in the list of
-    -- migrations to be applied.
-    --
-    -- * If the same migration is listed multiple times.
-    --
-    -- * If the command does not create the same schema as the
-    -- aggregate of all the replaced migrations.  Note that this
-    -- error condition is not checked for!
-    --
-    -- An example:
-    --
-    -- Say we have the following schema migrations that have already been
-    -- applied:
-    --
-    -- @
+    -- migrations :: [ Migration ]
     -- migrations = [
-    --    makeMigration "foo-1"
-    --      [sql|CREATE TABLE foo (foo INT PRIMARY KEY); |],
-    --    makeMigration "foo-2"
-    --      [sql|ALTER TABLE foo ADD COLUMN bar TEXT; |]
-    --      `addDependency` "foo-1",
-    --    makeMigration "foo-3"
-    --      [sql|ALTER TABLE foo ADD COLUMN baz BOOL; |] ]
-    --      `addDependencies` [ "foo-1", "foo-2" ]
+    --      makeMigration "example-1"
+    --          [sql| ... |]
+    --          \`addDependency\` "some-other-migration"
+    --          \`setPhase\` 2,
+    --          \`setOptional\` Optional,
+    --      ...
+    -- ]
     -- @
-    --
-    -- We could replace this with:
-    --
-    -- @
-    -- migrations = [
-    --    makeMigration "foo-4"
-    --        [sql| CREATE TABLE foo (
-    --                 foo INT PRIMARY KEY,
-    --                 bar TEXT,
-    --                 baz BOOL); |]
-    --        `addReplaces` [
-    --              makeReplaces "foo1" "<fingerprint>",
-    --              makeReplaces "foo2" "<fingerprint>",
-    --              makeReplaces "foo3" "<fingerprint>" ]
-    --    ]
-    -- @
-    --
-    -- Note that the @replaces@ field is not part of the fingerprint.
-    -- So, after you are sure all databases have been upgraded, you
-    -- can quietly drop the replaces field, and move forward with
-    -- your cleaner migration list.
-    --
-    -- `makeMigration` sets this field to @[]@ (the empty list).  It
-    -- can be modified with the `addReplaces` function.
     --
     data Migration = Migration {
         name :: CI Text,
         -- ^ The name of the migration.
+        --
+        -- Set by the `Database.PostgreSQL.Simple.Migrate.makeMigration`
+        -- function.
 
         command :: Query,
         -- ^ The command to execute to perform the migration.  
+        --
+        -- Set by the `Database.PostgreSQL.Simple.Migrate.makeMigration`
+        -- function.
 
         fingerprint :: Text,
         -- ^ The fingerprint (hash) of the command.
+        --
+        -- Set by the `Database.PostgreSQL.Simple.Migrate.makeMigration`
+        -- function.
 
         dependencies :: [ CI Text ],
         -- ^ The list of the names of other migrations this migration
         -- depends upon.
+        --
+        -- Defaults to the empty list by the
+        -- `Database.PostgreSQL.Simple.Migrate.makeMigration`
+        -- function.  Can be changed with the
+        -- `Database.PostgreSQL.Simple.Migrate.addDependency` or
+        -- `Database.PostgreSQL.Simple.Migrate.addDependencies`
+        -- functions.
 
         optional :: Optional,
         -- ^ Whether the migration is optional.
+        --
+        -- Defaults to `Required` by the
+        -- `Database.PostgreSQL.Simple.Migrate.makeMigration`
+        -- function.  Can be changed with the
+        -- `Database.PostgreSQL.Simple.Migrate.setOptional`
+        -- function.
+
 
         phase :: Int,
         -- ^ The phase to apply the migration in.
+        --
+        -- Defaults to 1 by the
+        -- `Database.PostgreSQL.Simple.Migrate.makeMigration`
+        -- function.  Can be changed with the
+        -- `Database.PostgreSQL.Simple.Migrate.setPhase`
+        -- function.
         
         replaces :: [ Replaces ]
         -- ^ The list of migrations this migration replaces.
+        --
+        -- Defaults to the empty list by the
+        -- `Database.PostgreSQL.Simple.Migrate.makeMigration`
+        -- function.  Can be changed with the
+        -- `Database.PostgreSQL.Simple.Migrate.addReplaces`
+        -- function.
+        
     } deriving (Show, Read, Generic)
 
     -- | Eq on Migrations is defined by name only.
@@ -355,23 +165,36 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
                     `seq` rnf (replaces mig)
                     `seq` ()
 
-    -- | Create a migration with most fields filled in with sensible
-    -- defaults.
+    -- | Create a migration.
     --
-    -- The migration name and command must be given, but everything
-    -- else gets a default value.  Specifically:
-    --
-    -- * The `optional` field is set to `Required`.
-    --
-    -- * The `phase` field is set to 1.
-    --
-    -- * The `dependencies` field is set to @[]@ (the empty list).
-    --
-    -- * The `replaces` field is set to @[]@ (the empty list).
+    -- The newly created migration can then be modified with the
+    -- `Database.PostgreSQL.Simple.Migrate.addDependency`,
+    -- `Database.PostgreSQL.Simple.Migrate.addDependencies`,
+    -- `Database.PostgreSQL.Simple.Migrate.setOptional`,
+    -- `Database.PostgreSQL.Simple.Migrate.setPhase`, and
+    -- `Database.PostgreSQL.Simple.Migrate.addReplaces` modifier
+    -- functions.
     --
     -- These fields can be overridden by the `addDependency`,
     -- `addDependencies`, `setPhase`, `setOptional`, and
     -- `addReplaces` functions.
+    --
+    -- All migration names need to be unique.  It customary to add a
+    -- version number on to the end of the name, for example
+    -- \"example-mig-1\", \"example-mig-2\", etc.  This tells
+    -- the human reader that these migrations are related.  It
+    -- is an error for two migrations to have the same name.
+    --
+    -- Note that names are case INSENSITIVE, so "foo", "Foo", and
+    -- "FOO" are all considered the same name.
+    --
+    -- The migration command is a `Database.PostgreSQL.Simple.Query`,
+    -- and is passed to `Database.PostgreSQL.Simple.execute_` within
+    -- a transaction (so multiple statements are allowed within the
+    -- command)..
+    --
+    -- Note that no arguments are allowed (execute_ is called,
+    -- not execute).
     --
     makeMigration :: Text
                         -- ^ Migration name
@@ -390,7 +213,10 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
 
     -- | Data about a replaced migration.
     --
-    -- See the documentation under the replaces field in `Migration`.
+    -- This structure is created by the
+    -- `Database.PostgreSQL.Simple.Migrate.makeReplaces` function,
+    -- and can be modified by the 
+    -- `Database.PostgreSQL.Simple.Migrate.setReplacesOptional` function.
     --
     data Replaces = Replaces {
                             rName        :: CI Text,
@@ -413,16 +239,50 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
 
     -- | Make a Replaces data structure.
     --
-    -- The rOptional field can be set using `setReplacesOptional` function,
-    -- like:
+    -- The replaces structure can be made optional using
+    -- `Database.PostgreSQL.Simple.Migrate.setReplacesOptional` function.
+    --
+    -- An example:
     --
     -- @
-    --    makeReplaces "example-1" "..."
-    --      `setReplacesOptional`  Optional
+    --      makeMigration "example3" [sql| ... |]
+    --          `addReplaces` [
+    --              makeReplaces "example1"
+    --                  \"9wbC-yXz6ISXeA-eFOn-l4DVoJZ4P8I79HJxJKHIBIg=\",
+    --              makeReplaces "example2"
+    --                  \"t_isz1eBAu8XM_e2idYdnCPvI-UFEpFC3s2RTyjArDA=\"
+    --                  \`setReplacesOptional\` Optional
+    --          ]
     -- @
     --
-    -- See the replaces field documentation in the `Migration` data
-    -- structure for more.
+    --
+    -- __WARNING__: The assumption is that the command, when executed,
+    -- will result the same schema as the aggregate result of applying
+    -- all the replaced migrations.  For obvious reasons this condition
+    -- is not checked for.  Violating it, however, will result in tears
+    -- and recriminations.  Use this feature at your own risk.
+    --
+    -- The following conditions are all errors:
+    --
+    -- * If a replaced migration exists but has a different fingerprint.
+    --
+    -- * If some required migrations exist, and others do not.
+    --
+    -- * If there are only optional replaced migrations.  Not replacing
+    -- any migrations is fine, as is having just one required replaced
+    -- migration.  But if you are replacing migrations, you have to
+    -- have at least one required replaced migration (this is so we can
+    -- affirmitively tell if the replacement is happening).
+    --
+    -- * If any of the replaced migrations are still in the list of
+    -- migrations to be applied.
+    --
+    -- * If the same migration is listed multiple times.
+    --
+    -- * If the command does not create the same schema as the
+    -- aggregate of all the replaced migrations.  Note that this
+    -- error condition is not checked for!
+    --
     makeReplaces :: Text
                         -- ^ The name of the migration being replaced.
                         -> Text
@@ -435,25 +295,25 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
 
     -- | Add a dependency to a migration.
     --
-    -- This is intended to be using via backticks with makeMigration,
-    -- like:
+    -- If you're adding multiple dependencies, consider using 
+    -- `Database.PostgreSQL.Simple.Migrate.addDependencies` instead.
     --
-    -- @
-    --      makeMigration "example-1" [sql| Some SQL |]
-    --          `addDependency` "example-2"
-    -- @
+    -- The following conditions are all errors:
     --
-    -- It can be applied multiple times:
+    -- * For a migration to depend upon a migration in a later phase
+    -- (the same phase is OK, just not later).
     --
-    -- @
-    --      makeMigration "example-1" [sql| Some SQL |]
-    --          `addDependency` "example-2"
-    --          `addDependency` "example-3"
-    --          `addDependency` "example-4"
-    -- @
+    -- * For any sequence of migrations to form a cycle (i.e. 
+    -- A depends upon B, which depends upon C, which depends upon A).
     --
-    -- But in this case, it's probably a better idea to use
-    -- `addDependencies` instead.
+    -- * For a migration to depend upon an unknown dependency.
+    --
+    -- * For the same migration to appear multiple times in the list.
+    -- Note that names are compared case INSENSITIVE, so having
+    -- \"foo\" and \"Foo\" both is an error.  
+    --
+    -- * For a migration marked as Required to depend upon a
+    -- migration marked as Optional.
     --
     addDependency :: Migration -> Text -> Migration
     addDependency mig dep =
@@ -461,67 +321,41 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
 
     -- | Add a list of dependencies to a migration.
     --
-    -- This is intended to be using via backticks with makeMigration,
-    -- like:
-    --
-    -- @
-    --      makeMigration "example-1" [sql| Some SQL |]
-    --          `addDependencies` [ "example-2", "example-3" ]
-    -- @
-    --
+    -- See `Database.PostgreSQL.Simple.Migrate.addDependency` for
+    -- more details.
     addDependencies :: Migration -> [ Text ] -> Migration
     addDependencies mig deps =
         mig { dependencies = (CI.mk <$> deps) ++ dependencies mig }
 
     -- | Set the optional field of a migration.
     --
-    -- This is intended to be using via backticks with makeMigration,
-    -- like:
-    --
-    -- @
-    --      makeMigration "example-1" [sql| Some SQL |]
-    --          `setOptional` Optional
-    -- @
-    --
     setOptional :: Migration -> Optional -> Migration
     setOptional mig opt = mig { optional = opt }
 
     -- | Set the phase field of a migration.
     --
-    -- This is intended to be using via backticks with makeMigration,
-    -- like:
+    -- All migrations of phase N will be applied before any
+    -- migrations of phase N+1 are applied.
     --
-    -- @
-    --      makeMigration "example-1" [sql| Some SQL |]
-    --          `setPhase` 2
-    -- @
+    -- Note that this only covers the migrations being applied
+    -- currently- it is possible that a previous execution
+    -- applied a migration of a later phase, than the migration
+    -- currently being applied.
+    --
+    -- 0, -1, etc., are valid phases.  Not all phases need to
+    -- have migrations.  So, for example,  you can have migrations
+    -- in phases -1, 0, 1, and 100, and that's OK- phases 2 through
+    -- 99 just don't have any migrations in them.
     --
     setPhase :: Migration -> Int -> Migration
     setPhase mig phz = mig { phase = phz }
 
     -- | Add a list of replaced migrations to a migration.
     --
-    -- This is intended to be using via backticks with makeMigration,
-    -- like:
-    --
-    -- @
-    --      makeMigration "example-1" [sql| Some SQL |]
-    --          `addReplaces`
-    --              [ makeReplaces "example-2" "fingerprint" ]
-    -- @
-    --
     addReplaces :: Migration -> [ Replaces ] -> Migration
     addReplaces mig repls = mig { replaces = repls ++ replaces mig }
 
     -- | Set the optional field of a `Replaces` structure.
-    --
-    -- This is intended to be using via backticks with makeReplaces,
-    -- like:
-    --
-    -- @
-    --      makeReplaces "example-1" "<fingerprint>"
-    --          `setReplacesOptional` Optional
-    -- @
     --
     setReplacesOptional :: Replaces -> Optional -> Replaces
     setReplacesOptional repl opt = repl { rOptional = opt }

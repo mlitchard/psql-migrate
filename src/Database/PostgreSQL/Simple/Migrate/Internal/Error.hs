@@ -1,3 +1,6 @@
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+
 -- |
 -- Module      : Database.PostgreSQL.Simple.Migrate.Internal.Error
 -- Description : The combined error type.
@@ -18,15 +21,14 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Error(
 
     import           Control.DeepSeq
     import           Data.List.NonEmpty (NonEmpty)
+    import           Data.String
     import           Data.Text          (Text)
 
-    -- | The possible errors
-    -- `Database.PostgreSQL.Simple.Migrate.Internal.Order.checkMigrations`,
-    -- `Database.PostgreSQL.Simple.Migrate.Internal.Apply.apply`, or 
-    -- `Database.PostgreSQL.Simple.Migrate.Internal.Apply.check`
+    -- | The possible errors that
+    -- `Database.PostgreSQL.Simple.Migrate.apply` or 
+    -- `Database.PostgreSQL.Simple.Migrate.check`
     --   can return.
     --
-    -- This makes unit testing a heck of a lot easier and less brittle.
     -- You can use `formatMigrationsError` to convert this type
     -- into a human-readable string.
     data MigrationsError =
@@ -119,68 +121,75 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Error(
         rnf Uninitialized                   = ()
         rnf (MissingRequireds xs)           = rnf xs `seq` ()
 
+    tShow :: forall s a . (IsString s, Show a) => a -> s
+    tShow = fromString . show
+
     -- | Convert an `MigrationsError` into a human-readable string.
-    formatMigrationsError :: MigrationsError -> String
+    formatMigrationsError :: forall s .
+                                (IsString s
+                                , Monoid s)
+                                => MigrationsError
+                                -> s
     formatMigrationsError (DuplicateMigrationName nm) =
-        "Two or more migrations share the name " ++ show nm
+        "Two or more migrations share the name " <> tShow nm
     formatMigrationsError (DuplicateDependency migName depName) =
-        "The migration " ++ show migName
-            ++ " has duplicate dependencies " ++ show depName
+        "The migration " <> tShow migName
+            <> " has duplicate dependencies " <> tShow depName
     formatMigrationsError (UnknownDependency migName depName) =
-        "The migration " ++ show migName
-            ++ " has a dependency " ++ show depName ++ " not in the list."
+        "The migration " <> tShow migName
+            <> " has a dependency " <> tShow depName <> " not in the list."
     formatMigrationsError (RequiredDependsOnOptional
                                     reqMigName optMigName) =
-        "The required migration " ++ show reqMigName
-            ++ " depends upon the optional migration " ++ show optMigName
+        "The required migration " <> tShow reqMigName
+            <> " depends upon the optional migration " <> tShow optMigName
     formatMigrationsError (CircularDependency migs) =
         "The following set of migrations form a dependency cycle: "
-        ++ show migs
+        <> tShow migs
     formatMigrationsError (LaterPhaseDependency
                                     earlierMig earlierPhase
                                     laterMig laterPhase) =
-        "The migration " ++ show earlierMig
-            ++ " in phase " ++ show earlierPhase
-            ++ " dependends upon the migration " ++ show laterMig
-            ++ " in phase " ++ show laterPhase
+        "The migration " <> tShow earlierMig
+            <> " in phase " <> tShow earlierPhase
+            <> " dependends upon the migration " <> tShow laterMig
+            <> " in phase " <> tShow laterPhase
     formatMigrationsError (NoRequiredReplacement migName) =
-        "The migration " ++ show migName ++ " replaces other migrations,"
-            ++ " but has no required replacements"
+        "The migration " <> tShow migName <> " replaces other migrations,"
+            <> " but has no required replacements"
     formatMigrationsError (DuplicateReplaces migName replName) =
-        "The migration " ++ show migName ++ " lists the migration "
-            ++ show replName ++ " in it's replaces list multiple times."
+        "The migration " <> tShow migName <> " lists the migration "
+            <> tShow replName <> " in it's replaces list multiple times."
     formatMigrationsError (ReplacedStillExists migName replacedName) =
-        "The migration " ++ show migName
-        ++ " says that it replaces the migration " ++ show replacedName
-        ++ ", but that migration still exists in the list."
+        "The migration " <> tShow migName
+        <> " says that it replaces the migration " <> tShow replacedName
+        <> ", but that migration still exists in the list."
     formatMigrationsError  EmptyMigrationList =
         "Empty migrations list"
     formatMigrationsError (UnknownMigrations nms) =
         "The following migrations are listed in the database as having\
         \ been applied, but are not in the list of migrations given to us:"
-        ++ (mconcat ((\s -> "\n    " ++ show s) <$> nms))
-        ++  "\n(Are you applying the wrong list of migrations to the\
+        <> (mconcat ((\s -> "\n    " <> tShow s) <$> nms))
+        <>  "\n(Are you applying the wrong list of migrations to the\
                 \ wrong database?)"
     formatMigrationsError (FingerprintMismatch nm) =
         "The migration "
-        ++ show nm
-        ++ " does not match the fingerprint in the database."
+        <> tShow nm
+        <> " does not match the fingerprint in the database."
     formatMigrationsError (ReplacedMigrationsExist par mig) =
-        "The migration " ++ show mig
-        ++ " is replaced by the migration " ++ show par
-        ++ " but still exists in the main migration list."
+        "The migration " <> tShow mig
+        <> " is replaced by the migration " <> tShow par
+        <> " but still exists in the main migration list."
     formatMigrationsError (ReplacedFingerprint nm repl) =
-        "Migration " ++ show repl ++ " which is being replaced by the\
-        \ migration " ++ show nm ++ " does not match the fingerprint\
+        "Migration " <> tShow repl <> " which is being replaced by the\
+        \ migration " <> tShow nm <> " does not match the fingerprint\
         \ in the database."
     formatMigrationsError (RequiredReplacementMissing nm repl) =
-        "Migration " ++ show nm ++ " is missing required replacement "
-        ++ show repl ++ " while other replaced migrations exist."
+        "Migration " <> tShow nm <> " is missing required replacement "
+        <> tShow repl <> " while other replaced migrations exist."
     formatMigrationsError Uninitialized =
         "Database is uninitialized (no migrations have ever been applied)."
     formatMigrationsError (MissingRequireds reqs) =
         "Required migrations not applied: "
-        ++ mconcat ((\s -> "\n    " ++ show s) <$> reqs)
+        <> mconcat ((\s -> "\n    " <> tShow s) <$> reqs)
 
 
 

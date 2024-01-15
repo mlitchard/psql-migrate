@@ -141,7 +141,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
     --
     -- If the "Database.PostgreSQL.Simple" library throws an exception,
     -- it is rethrown by this function.  Otherwise, if there is an
-    -- error, the error printed and the application of migrations
+    -- error, the error printed and the checking of migrations
     -- is halted.
     --
     check :: forall logmsg .
