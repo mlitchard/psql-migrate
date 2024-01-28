@@ -385,6 +385,94 @@
 -- of phase N happens before any migration of phase N+1 happens.  So
 -- by setting these migrations to be phase 0, they will happen \"first\".
 --
+-- == Reading SQL From a File
+--
+-- Although it is generally considered good practice to have the schema
+-- modification commands directly in the file (either via overloaded
+-- strings or the sql quasiquoter), some times external factors require
+-- the schema commands be loaded from an external file.
+--
+-- In this case, you can use the
+-- [file-embed library](https://hackage.haskell.org/package/file-embed-0.0.16.0/docs/Data-FileEmbed.html)
+-- to load the file into the executable at compile time.  For example,
+-- you can load a raw query like this:
+--
+-- @
+-- {-# LANGUAGE TemplateHaskell #-}
+-- module Foo (migrations) where
+--
+--     import           Database.PostgreSQL.Simple.Migrate
+--     import           Database.PostgreSQL.Simple.Types   (Query(..))
+--     import           Data.ByteString                    (ByteString)
+--     import           Data.FileEmbed                     (embedFile)
+--     
+--     myFile :: ByteString
+--     myFile = $(embedFile "myquery.sql")
+--
+--     migrations :: [ Migration ]
+--     migrations = [
+--         makeMigration "mig-1" (Query myFile)
+--     ]
+-- @
+--
+-- A more powerful way to accomplish the same goal is to take advantage
+-- of the `Data.Aeson.FromJSON` instance on the `Migration` type, and
+-- do:
+--
+-- @
+-- {-# LANGUAGE TemplateHaskell #-}
+-- module Foo (migrations) where
+--
+--     import           Data.Aeson                         (decode)
+--     import           Database.PostgreSQL.Simple.Migrate
+--     import           Data.ByteString                    (ByteString)
+--     import qualified Data.ByteString.Lazy               as Lazy
+--     import           Data.FileEmbed                     (embedFile)
+--     
+--     myFile :: ByteString
+--     myFile = $(embedFile "myquery.sql")
+--
+--     migrations :: [ Migration ]
+--     migrations = 
+--         case decode myFile of
+--             Nothing -> error "Error decoding myquery.sql"
+--             Just xs -> xs
+-- @
+--
+-- A minimal migration, in JSON, would be:
+--
+-- @
+-- {
+--   "name": "foo",
+--   "command": "SQL goes here"
+-- }
+-- @
+--
+-- A maximal migration, in JSON, would be:
+--
+-- @
+-- {
+--   "name":"foo",
+--   "command":"Example SQL",
+--   "deps":["bar","baz"],
+--   "optional":true,
+--   "phase":3,
+--   "replaces":
+--   [
+--     {
+--       "name":"alpha",
+--       "fingerprint":"rJqW8fvpg6kMVD3-QgMyeqsHNey_eqI5BNzRjSZD3d4="
+--     },
+--     {
+--       "name":"beta",
+--       "fingerprint":"htmzbT5XHDNwez6ITdlkG5hJpPWjir_47U8u4I-5v2c=",
+--       "optional":true
+--     }
+--   ]
+-- }
+-- @
+--
+
 module Database.PostgreSQL.Simple.Migrate (
     -- * Migration type
     Migration,

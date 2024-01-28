@@ -1,4 +1,6 @@
-{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveGeneric       #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 -- |
 -- Module      : Database.PostgreSQL.Simple.Migrate.Internal.Types
@@ -29,13 +31,17 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
 ) where
 
     import           Control.DeepSeq
+    import qualified Data.Aeson                       as Aeson
+    import qualified Data.ByteString.Char8            as Char8
     import           Data.CaseInsensitive             (CI)
     import qualified Data.CaseInsensitive             as CI
+    import           Data.String                      (IsString(..))
     import           Data.Text                        (Text)
     import           Database.PostgreSQL.Simple.Types (Query (..))
     import           GHC.Generics
+    import qualified Test.QuickCheck                  as QC
 
-    import Database.PostgreSQL.Simple.Migrate.Internal.Finger;
+    import Database.PostgreSQL.Simple.Migrate.Internal.Finger
 
     -- | Boolean-analog for whether a migration is optional or required.
     --
@@ -47,8 +53,6 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
 
     instance NFData Optional where
         rnf = rwhnf
-
-
 
     -- | A single database schema migration.
     -- 
@@ -165,6 +169,116 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
                     `seq` rnf (replaces mig)
                     `seq` ()
 
+    instance Aeson.FromJSON Migration where
+        parseJSON = Aeson.withObject "Migration" $ \obj -> do
+            nmcs :: Text <- obj Aeson..: "name"
+            let nm :: CI Text
+                nm = CI.mk nmcs
+            cmds :: String <- obj Aeson..: "command"
+            let cmd :: Query
+                cmd = fromString cmds
+                fprint :: Text
+                fprint = makeFingerprint cmd
+            mdeps :: Maybe [ Text ] <- obj Aeson..:? "deps"
+            let deps :: [ CI Text ]
+                deps = case mdeps of
+                            Nothing -> []
+                            Just xs -> CI.mk <$> xs
+            mopt :: Maybe Bool <- obj Aeson..:? "optional"
+            let opt :: Optional
+                opt = case mopt of
+                            Nothing    -> Required
+                            Just True  -> Optional
+                            Just False -> Optional
+            mphase :: Maybe Int <- obj Aeson..:? "phase"
+            let phs :: Int
+                phs = case mphase of
+                        Nothing -> 1
+                        Just p  -> p
+            mreps :: Maybe [ Replaces ] <- obj Aeson..:? "replaces"
+            let reps :: [ Replaces ]
+                reps = case mreps of
+                        Nothing -> []
+                        Just xs -> xs
+            pure $ Migration {
+                    name = nm,
+                    command = cmd,
+                    fingerprint = fprint,
+                    dependencies = deps,
+                    optional = opt,
+                    phase = phs,
+                    replaces = reps }
+
+    toObject :: Aeson.KeyValue kv => Migration -> [ kv ]
+    toObject mig =
+        [
+            "name" Aeson..= CI.original (name mig),
+            "command" Aeson..= Char8.unpack (fromQuery (command mig))
+        ]
+        ++ (case dependencies mig of
+                [] -> []
+                deps -> [ "deps" Aeson..= (CI.original <$> deps) ]
+            )
+        ++ (case optional mig of
+                Optional -> [ "optional" Aeson..= True ]
+                Required -> [])
+        ++ (case phase mig of
+                1 -> []
+                p -> [ "phase" Aeson..= p ])
+        ++ (case replaces mig of
+                [] -> []
+                rs -> [ "replaces" Aeson..= rs ])
+
+    instance Aeson.ToJSON Migration where
+        toJSON mig = Aeson.object $ toObject mig
+        toEncoding mig = Aeson.pairs . mconcat $ toObject mig
+
+    alnumString :: IsString s => QC.Gen s
+    alnumString = do
+            x :: Char <- QC.elements $ ['A'..'Z'] ++ ['a'..'z']
+            xs :: String <- QC.listOf alnum
+            pure $ fromString (x:xs)
+        where
+            alnum :: QC.Gen Char
+            alnum = QC.elements $
+                            ['A'..'Z']++['a'..'z']++['0'..'9']++ ['_']
+
+    instance QC.Arbitrary Migration where
+        arbitrary = do
+            nm :: CI Text <- alnumString
+            cmd :: Query  <- alnumString
+            let fprint :: Text
+                fprint = makeFingerprint cmd
+            deps :: [ CI Text ] <- QC.listOf alnumString
+            opt :: Optional <- QC.elements [ minBound .. maxBound ]
+            phs :: Int <- QC.arbitrary
+            reps :: [ Replaces ] <- QC.listOf QC.arbitrary
+            pure $ Migration {
+                name = nm,
+                command = cmd,
+                fingerprint = fprint,
+                dependencies = deps,
+                optional = opt,
+                phase = phs,
+                replaces = reps }
+        shrink mig = init $
+            Migration
+                (name mig)
+                (command mig)
+                (fingerprint mig)
+                <$> (case dependencies mig of
+                        [] -> pure []
+                        xs -> [ [], xs ] )
+                <*> (case optional mig of
+                        Required -> pure Required
+                        Optional -> [ Required, Optional ])
+                <*> (case phase mig of
+                        1 -> [ 1 ]
+                        p -> [ 1, p ])
+                <*> (case replaces mig of
+                        [] -> pure []
+                        xs -> [ [], xs ])
+
     -- | Create a migration.
     --
     -- The newly created migration can then be modified with the
@@ -236,6 +350,48 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
                     `seq` rnf (rOptional rep)
                     `seq` ()
 
+    instance Aeson.FromJSON Replaces where
+        parseJSON = Aeson.withObject "Replaces" $ \obj -> do
+                        nm :: CI Text <- fromString <$> (obj Aeson..: "name")
+                        fprint :: Text <- obj Aeson..: "fingerprint"
+                        mopt :: Maybe Bool <- obj Aeson..:? "optional"
+                        let opt :: Optional
+                            opt = case mopt of
+                                    Nothing    -> Required
+                                    Just True  -> Optional
+                                    Just False -> Required
+                        pure $ Replaces {
+                                rName        = nm,
+                                rFingerprint = fprint,
+                                rOptional    = opt }
+
+    replacesObject :: Aeson.KeyValue kv => Replaces -> [ kv ]
+    replacesObject rep = [ "name" Aeson..= CI.original (rName rep),
+                            "fingerprint" Aeson..= rFingerprint rep
+                            ]
+                            ++ (case rOptional rep of
+                                    Optional -> [ "optional" Aeson..= True ]
+                                    Required -> [])
+
+    instance Aeson.ToJSON Replaces where
+        toJSON rep = Aeson.object $ replacesObject rep
+        toEncoding rep = Aeson.pairs . mconcat $ replacesObject rep
+
+    instance QC.Arbitrary Replaces where
+        arbitrary = do
+            nm :: CI Text <- alnumString
+            cmd :: Query <- alnumString
+            let fprint :: Text
+                fprint = makeFingerprint cmd
+            opt :: Optional <- QC.elements [ minBound .. maxBound ]
+            pure $ Replaces {
+                        rName = nm,
+                        rFingerprint = fprint,
+                        rOptional = opt }
+        shrink rep =
+            case rOptional rep of
+                Optional -> [ rep { rOptional = Required } ]
+                Required -> []
 
     -- | Make a Replaces data structure.
     --

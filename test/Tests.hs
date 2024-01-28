@@ -13,8 +13,12 @@ module Tests (
     tests
 ) where
 
+    import qualified Data.Aeson         as Aeson
     import           Data.List.NonEmpty (NonEmpty (..))
+    import           Data.Proxy
+    import           Data.Typeable
     import           Test.HUnit
+    import qualified Test.QuickCheck    as QuickCheck
 
     import           Database.PostgreSQL.Simple.Migrate
     import           Database.PostgreSQL.Simple.Migrate.Internal.Order
@@ -22,17 +26,59 @@ module Tests (
 
     -- | orderMigrations unit tests.
     tests :: Test
-    tests = TestLabel "orderMigrations" $
-                TestList [
-                    testOneDep,
-                    testDupName,
-                    testDupDep,
-                    testUnknown,
-                    testReqOpt,
-                    testCir1,
-                    testCir2,
-                    testCir3
-                ]
+    tests = TestList [ orderTests, aesonTests ]
+
+    aesonTests :: Test
+    aesonTests = TestLabel "aesonTests" $
+                    TestList [
+                        testJSON (Proxy :: Proxy Replaces),
+                        testJSON (Proxy :: Proxy Migration) ]
+
+    quickCheckTest :: QuickCheck.Testable prop => prop -> Test
+    quickCheckTest prop = TestCase $ do
+                            let args = QuickCheck.stdArgs
+                                        { QuickCheck.chatty = False }
+                            rval :: QuickCheck.Result
+                                <- QuickCheck.quickCheckWithResult args prop
+                            assert (QuickCheck.isSuccess rval)
+
+    testJSON :: forall a .
+                (Eq a
+                , Aeson.ToJSON a
+                , Aeson.FromJSON a
+                , QuickCheck.Arbitrary a
+                , Typeable a
+                , Show a)
+                => Proxy a
+                -> Test
+    testJSON proxy = do
+            let lbl :: String
+                lbl = "JSON encode/decode for " ++ show (typeRep proxy)
+            TestLabel lbl $ TestList [
+                quickCheckTest propEncode,
+                quickCheckTest propToJSON ]
+        where
+            -- uses toEncoding implicitly
+            propEncode :: a -> Bool
+            propEncode a = (Aeson.decode' (Aeson.encode a) == Just a)
+
+            -- uses toJSON explicitly
+            propToJSON :: a -> Bool
+            propToJSON a = Aeson.fromJSON (Aeson.toJSON a) == Aeson.Success a
+
+
+    orderTests :: Test
+    orderTests = TestLabel "orderMigrations" $
+                    TestList [
+                        testOneDep,
+                        testDupName,
+                        testDupDep,
+                        testUnknown,
+                        testReqOpt,
+                        testCir1,
+                        testCir2,
+                        testCir3
+                    ]
 
         where
             mig1 :: Migration
