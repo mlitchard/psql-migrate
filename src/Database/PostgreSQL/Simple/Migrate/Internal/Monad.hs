@@ -23,6 +23,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Monad (
     runM,
     liftM,
     logM,
+    logM',
     throwM,
     bracketM,
     withTransactionLevelM,
@@ -59,7 +60,8 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Monad (
     --
     newtype M logmsg a = M { 
         -- | Run a M monad.
-        runM :: (Verbose -> logmsg -> IO ()) -> IO (Either MigrationsError a) }
+        runM :: (Verbose -> IO logmsg -> IO ())
+                    -> IO (Either MigrationsError a) }
 
     instance Functor (M logmsg) where
         fmap f m = M $ \v -> (fmap . fmap) f (runM m v)
@@ -84,8 +86,14 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Monad (
     -- | Log a message.
     logM :: forall logmsg . Verbose -> logmsg -> M logmsg ()
     logM lvl msg = M $ \v -> do
-                                v lvl msg
+                                v lvl (pure msg)
                                 pure $ Right ()
+
+    -- | Log a message with a side-effecting message.
+    logM' :: forall logmsg . Verbose -> IO logmsg -> M logmsg ()
+    logM' lvl msgIO = M $ \v -> do
+                                    v lvl msgIO
+                                    pure $ Right ()
 
     -- | Our version of ExceptT's throwError
     throwM :: forall a logmsg . MigrationsError -> M logmsg a
@@ -102,14 +110,14 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Monad (
     bracketM start stop act =
             M $ \v -> bracket (start' v) (stop' v) (act' v)
         where
-            start' :: (Verbose -> logmsg -> IO ()) -> IO (StM a)
+            start' :: (Verbose -> IO logmsg -> IO ()) -> IO (StM a)
             start' v = runM start v
 
-            stop' :: (Verbose -> logmsg -> IO ()) -> StM a -> IO (StM b)
+            stop' :: (Verbose -> IO logmsg -> IO ()) -> StM a -> IO (StM b)
             stop' _ (Left err) = pure $ Left err
             stop' v (Right a)  = runM (stop a) v
 
-            act' :: (Verbose -> logmsg -> IO ()) -> StM a -> IO (StM c)
+            act' :: (Verbose -> IO logmsg -> IO ()) -> StM a -> IO (StM c)
             act' _ (Left err) = pure $ Left err
             act' v (Right a)  = runM (act a) v
 

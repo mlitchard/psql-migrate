@@ -58,6 +58,7 @@ test-suite psql-migrate-test
   main-is:          Spec.hs
   other-modules:    Tests
                     , Live
+                    , LiveM
   hs-source-dirs:   test
   ghc-options:      -Wall
                     -Werror
@@ -69,6 +70,7 @@ test-suite psql-migrate-test
       base >=4.7 && <5
       , aeson
       , HUnit
+      , mtl
       , postgresql-simple
       , psql-migrate
       , QuickCheck
