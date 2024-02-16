@@ -25,3 +25,4 @@ cabal.project.local~
 *~
 .*.sw?
 stack.yaml.lock
+runtests
