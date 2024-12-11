@@ -20,9 +20,13 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Error(
 ) where
 
     import           Control.DeepSeq
-    import           Data.List.NonEmpty (NonEmpty)
+    import qualified Data.Foldable      as Foldable
+    import qualified Data.List          as List
+    import           Data.List.NonEmpty (NonEmpty(..))
     import           Data.String
     import           Data.Text          (Text)
+
+    import Database.PostgreSQL.Simple.Migrate.Internal.Types
 
     -- | The possible errors that
     -- `Database.PostgreSQL.Simple.Migrate.apply` or 
@@ -34,31 +38,31 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Error(
     data MigrationsError =
     
         -- | Two (or more) migrations have the same name.
-        DuplicateMigrationName Text
+        DuplicateMigrationName Migration Migration
 
         -- | A migration lists the same dependency more than once.
-        | DuplicateDependency Text Text
+        | DuplicateDependency Migration Text
 
         -- | A migration has a dependency that isn't in the list.
-        | UnknownDependency Text Text
+        | UnknownDependency Migration Text
 
         -- | A required migration depends upon an optional migration.
-        | RequiredDependsOnOptional Text Text
+        | RequiredDependsOnOptional Migration Migration
 
         -- | A set of dependencies forms a cycle.
-        | CircularDependency (NonEmpty Text)
+        | CircularDependency (NonEmpty Migration)
 
         -- | Migration depends upon a migration in a later phase.
-        | LaterPhaseDependency Text Int Text Int
+        | LaterPhaseDependency Migration Migration
 
         -- | All replacement migrations are optional
-        | NoRequiredReplacement Text
+        | NoRequiredReplacement Migration
 
         -- | The same migration is listed multiple times in replaces
-        | DuplicateReplaces Text Text
+        | DuplicateReplaces Migration Text
 
         -- | Replaced migration still exists
-        | ReplacedStillExists Text Text
+        | ReplacedStillExists Migration Migration
 
         -- | No migrations in the list.
         | EmptyMigrationList
@@ -101,14 +105,12 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Error(
         deriving (Show, Read, Ord, Eq)
 
     instance NFData MigrationsError where
-        rnf (DuplicateMigrationName x)      = rnf x `seq` ()
+        rnf (DuplicateMigrationName x y)    = rnf x `seq` rnf y `seq` ()
         rnf (DuplicateDependency x y)       = rnf x `seq` rnf y `seq` ()
         rnf (UnknownDependency x y)         = rnf x `seq` rnf y `seq` ()
         rnf (RequiredDependsOnOptional x y) = rnf x `seq` rnf y `seq` ()
         rnf (CircularDependency xs)         = rnf xs `seq` ()
-        rnf (LaterPhaseDependency x i y j)  = rnf x `seq` rnf i
-                                                `seq` rnf y `seq` rnf j
-                                                `seq` ()
+        rnf (LaterPhaseDependency x y)      = rnf x `seq` rnf y `seq` ()
         rnf (NoRequiredReplacement t)       = rnf t
         rnf (DuplicateReplaces x y)         = rnf x `seq` rnf y `seq` ()
         rnf (ReplacedStillExists t u)       = rnf t `seq` rnf u `seq` ()
@@ -121,75 +123,86 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Error(
         rnf Uninitialized                   = ()
         rnf (MissingRequireds xs)           = rnf xs `seq` ()
 
-    tShow :: forall s a . (IsString s, Show a) => a -> s
-    tShow = fromString . show
-
     -- | Convert an `MigrationsError` into a human-readable string.
-    formatMigrationsError :: forall s .
-                                (IsString s
-                                , Monoid s)
-                                => MigrationsError
-                                -> s
-    formatMigrationsError (DuplicateMigrationName nm) =
-        "Two or more migrations share the name " <> tShow nm
-    formatMigrationsError (DuplicateDependency migName depName) =
-        "The migration " <> tShow migName
-            <> " has duplicate dependencies " <> tShow depName
-    formatMigrationsError (UnknownDependency migName depName) =
-        "The migration " <> tShow migName
-            <> " has a dependency " <> tShow depName <> " not in the list."
-    formatMigrationsError (RequiredDependsOnOptional
-                                    reqMigName optMigName) =
-        "The required migration " <> tShow reqMigName
-            <> " depends upon the optional migration " <> tShow optMigName
-    formatMigrationsError (CircularDependency migs) =
-        "The following set of migrations form a dependency cycle: "
-        <> tShow migs
-    formatMigrationsError (LaterPhaseDependency
-                                    earlierMig earlierPhase
-                                    laterMig laterPhase) =
-        "The migration " <> tShow earlierMig
-            <> " in phase " <> tShow earlierPhase
-            <> " dependends upon the migration " <> tShow laterMig
-            <> " in phase " <> tShow laterPhase
-    formatMigrationsError (NoRequiredReplacement migName) =
-        "The migration " <> tShow migName <> " replaces other migrations,"
-            <> " but has no required replacements"
-    formatMigrationsError (DuplicateReplaces migName replName) =
-        "The migration " <> tShow migName <> " lists the migration "
-            <> tShow replName <> " in it's replaces list multiple times."
-    formatMigrationsError (ReplacedStillExists migName replacedName) =
-        "The migration " <> tShow migName
-        <> " says that it replaces the migration " <> tShow replacedName
-        <> ", but that migration still exists in the list."
+    formatMigrationsError :: MigrationsError -> String
+    formatMigrationsError (DuplicateMigrationName mig dep) =
+        "Duplicate migration names between "
+            ++ showMigration mig
+            ++ " and "
+            ++ showMigration dep
+    formatMigrationsError (DuplicateDependency mig depName) =
+        "Duplicate dependency "
+        ++ show depName
+        ++ " in migration "
+        ++ showMigration mig
+    formatMigrationsError (UnknownDependency mig depName) =
+        "Unknown dependency "
+        ++ show depName
+        ++ " in migration "
+        ++ showMigration mig
+    formatMigrationsError (RequiredDependsOnOptional req opt) =
+        "Required migration "
+        ++ showMigration req
+        ++ " depends on optional migration "
+        ++ showMigration opt
+    formatMigrationsError (CircularDependency (mig :| [])) =
+        "The migration "
+        ++ showMigration mig
+        ++ " depends upon itself."
+    formatMigrationsError (CircularDependency (mig :| migs)) =
+        "Circular dependency: "
+        ++ (List.intercalate ", " (showMigration <$> (mig : migs)))
+    formatMigrationsError (LaterPhaseDependency mig dep) =
+        "Phase violation: migration "
+        ++ showMigration mig 
+        ++ " (phase " ++ show (phase mig) ++ ")"
+        ++ " can not depend upon migration "
+        ++ showMigration dep
+        ++ " (phase " ++ show (phase dep) ++ ")"
+        ++ ", which is in a later phase."
+    formatMigrationsError (NoRequiredReplacement mig) =
+        "The migration "
+        ++ showMigration mig
+        ++ " has no required replacements (at least one is needed)."
+    formatMigrationsError (DuplicateReplaces mig replName) =
+        "Duplicate replaced name " 
+        ++ show replName
+        ++ " in migration "
+        ++ showMigration mig
+    formatMigrationsError (ReplacedStillExists mig repl) =
+        "Migration "
+        ++ showMigration mig
+        ++ " replaces migration "
+        ++ showMigration repl
+        ++ " but the latter still exists."
     formatMigrationsError  EmptyMigrationList =
         "Empty migrations list"
     formatMigrationsError (UnknownMigrations nms) =
         "The following migrations are listed in the database as having\
         \ been applied, but are not in the list of migrations given to us:"
-        <> (mconcat ((\s -> "\n    " <> tShow s) <$> nms))
+        <> (mconcat ((\s -> "\n    " <> show s) <$> nms))
         <>  "\n(Are you applying the wrong list of migrations to the\
                 \ wrong database?)"
     formatMigrationsError (FingerprintMismatch nm) =
         "The migration "
-        <> tShow nm
+        <> show nm
         <> " does not match the fingerprint in the database."
     formatMigrationsError (ReplacedMigrationsExist par mig) =
-        "The migration " <> tShow mig
-        <> " is replaced by the migration " <> tShow par
+        "The migration " <> show mig
+        <> " is replaced by the migration " <> show par
         <> " but still exists in the main migration list."
     formatMigrationsError (ReplacedFingerprint nm repl) =
-        "Migration " <> tShow repl <> " which is being replaced by the\
-        \ migration " <> tShow nm <> " does not match the fingerprint\
+        "Migration " <> show repl <> " which is being replaced by the\
+        \ migration " <> show nm <> " does not match the fingerprint\
         \ in the database."
     formatMigrationsError (RequiredReplacementMissing nm repl) =
-        "Migration " <> tShow nm <> " is missing required replacement "
-        <> tShow repl <> " while other replaced migrations exist."
+        "Migration " <> show nm <> " is missing required replacement "
+        <> show repl <> " while other replaced migrations exist."
     formatMigrationsError Uninitialized =
         "Database is uninitialized (no migrations have ever been applied)."
     formatMigrationsError (MissingRequireds reqs) =
         "Required migrations not applied: "
-        <> mconcat ((\s -> "\n    " <> tShow s) <$> reqs)
+        <> mconcat ((\s -> "\n    " <> show s) <$> reqs)
 
 
 

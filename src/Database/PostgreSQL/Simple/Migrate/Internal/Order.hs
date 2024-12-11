@@ -24,6 +24,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
     orderMigrations
 ) where
 
+    import           Control.Monad        (when)
     import           Data.CaseInsensitive (CI)
     import qualified Data.CaseInsensitive as CI
     import qualified Data.Foldable        as Foldable
@@ -100,7 +101,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
         migMap :: MigMap <- makeMigMap migs
 
         -- Check all the migrations for validity.
-        Map.foldr (checkMig migMap) (Right ()) migMap
+        mapM_ (checkMig migMap) migMap
 
         -- Create the per-phase graphs
         let zgrphs :: IntMap Grph
@@ -155,127 +156,104 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
         in
         getMigration <$> nodes
 
-
     -- | Create the map of name -> migration.
     --
     -- And while we're at it, make sure we don't have any duplicate
     -- names.
     --
     makeMigMap :: [ Migration ] -> M MigMap
-    makeMigMap migs = foldr go Right migs Map.empty
+    makeMigMap = Foldable.foldlM go Map.empty
         where
-            go :: Migration
-                    -> (MigMap -> M MigMap)
-                    -> MigMap
-                    -> M MigMap
-            go mig cont mp =
+            go :: MigMap -> Migration -> M MigMap
+            go mp mig =
                 -- Are we already in the map?
                 case Map.lookup (name mig) mp of
                     Just mig2 ->
                         -- Yes: we're a duplicate name.
-                        Left $ DuplicateMigrationName 
-                                (CI.original (name mig2))
+                        Left $ DuplicateMigrationName mig mig2
                     Nothing ->
                         -- No: add us to the map and continue.
-                        let mp2 :: MigMap
-                            mp2 = Map.insert (name mig) mig mp
-                        in
-                        cont mp2
+                        pure $ Map.insert (name mig) mig mp
 
     -- | Check a migration for multiple error conditions.
-    checkMig :: MigMap -> Migration -> M () -> M ()
-    checkMig migMap mig cont = do
-            foldr   checkDep
-                    (\_ -> Right ())
-                    (dependencies mig)
-                    Set.empty
+    checkMig :: MigMap -> Migration -> M ()
+    checkMig migMap mig = do
+            _ <- Foldable.foldlM checkDupe Set.empty (dependencies mig)
+            deps :: [ Migration ] <- traverse lookupDep (dependencies mig)
+            when (optional mig == Required) $ mapM_ checkNoOpt deps
+            mapM_ checkCirc (dependencies mig)
             case replaces mig of
-                [] -> cont
-                rs -> do
-                    mapM_ checkRepl rs
-                    checkReqRepl rs
-                    foldr checkDupRepl (\_ -> Right ()) rs Set.empty
-                    cont
-                    
+                [] -> pure ()
+                xs -> do
+                    checkForRequiredReplacement xs
+                    _ <- Foldable.foldlM checkDupeReplacement Set.empty xs
+                    mapM_ checkReplacesDoesNotExist xs
+                    pure ()
         where
+            -- Check that we don't have duplicate dependencies.
+            -- checks on it.
+            checkDupe :: Set K -> K -> M (Set K)
+            checkDupe st nm =
+                if Set.member nm st
+                    then Left $ DuplicateDependency mig (CI.original nm)
+                    else pure $ Set.insert nm st
 
-            -- Check a dependency for multiple error conditions.
-            checkDep :: K
-                        -> (Set K -> M ())
-                        -> Set K
-                        -> M ()
-            checkDep depCIName next set =
-                -- Check that the dependency exists
-                case Map.lookup depCIName migMap of
-                    Nothing     ->
-                        Left $ UnknownDependency
-                                (CI.original (name mig))
-                                (CI.original depCIName)
-                    Just depMig
-                        -- Check that we haven't already seen this
-                        -- dependency.
-                        | (Set.member depCIName set)       ->
-                            Left $ DuplicateDependency
-                                    (CI.original (name mig))
-                                    (CI.original depCIName)
-
-                        -- Check that the depency isn't optional
-                        -- or this migration isn't required.
-                        | ((optional depMig == Optional)
-                            && (optional mig == Required)) ->
-                            Left $ RequiredDependsOnOptional
-                                    (CI.original (name mig))
-                                    (CI.original (name depMig))
-
-                        -- Check that the dependency is not in a
-                        -- later phase.
-                        | (phase depMig > phase mig) ->
-                            Left $ LaterPhaseDependency
-                                    (CI.original (name mig))
-                                    (phase mig)
-                                    (CI.original (name depMig))
-                                    (phase depMig)
-
-                        -- Check if we're a direct cycle (i.e. we
-                        -- depend upon ourselves).
-                        | (depCIName == (name mig)) ->
-                            Left $ CircularDependency
-                                    ((CI.original (name mig))
-                                        :| [ CI.original depCIName ])
-                        | otherwise                        ->
-                           next (Set.insert depCIName set)
-
-            -- Check if a replaced migration still exists.
-            checkRepl :: Replaces -> M ()
-            checkRepl repl =
-                case Map.lookup (rName repl) migMap of
-                    Nothing -> Right ()
-                    Just _  -> Left $
-                                ReplacedStillExists
-                                    (CI.original (name mig))
-                                    (CI.original (rName repl))
-
-            -- Check that we have at least one required replaces.
+            -- Convert from dependency name to migration structure.
             --
-            -- Note that we don't have to worry about the
-            -- empty list case, as that was already dealt with.
+            -- Errors out if the migration doesn't exist.
+            lookupDep :: K -> M Migration
+            lookupDep nm =
+                case Map.lookup nm migMap of
+                    Nothing  -> Left $ UnknownDependency mig (CI.original nm)
+                    Just dep -> pure dep
+
+
+            -- Check that we don't depend upon on optional migration.
             --
-            checkReqRepl :: [ Replaces ] -> M ()
-            checkReqRepl repls =
-                if any isReq repls
-                then Right ()
-                else Left $ NoRequiredReplacement
-                                (CI.original (name mig))
+            -- This is only called when we are a required migration.
+            checkNoOpt :: Migration -> M ()
+            checkNoOpt dep =
+                if optional dep == Optional
+                then Left $ RequiredDependsOnOptional mig dep
+                else pure ()
 
-            isReq :: Replaces -> Bool
-            isReq repl = rOptional repl == Required
+            -- Check that we are not in an early phase than a dependency.
+            checkPhase :: Migration -> M ()
+            checkPhase dep =
+                if phase mig < phase dep
+                then Left $ LaterPhaseDependency mig dep
+                else pure ()
 
-            checkDupRepl :: Replaces -> (Set K -> M ()) -> Set K -> M ()
-            checkDupRepl repl next set =
-                if (Set.member (rName repl) set)
-                then Left $ DuplicateReplaces (CI.original (name mig))
-                                (CI.original (rName repl))
-                else next (Set.insert (rName repl) set)
+            -- Check that we're not a trivial circular dependency
+            -- (i.e. we depend on ourselves)
+            checkCirc :: K -> M ()
+            checkCirc depName =
+                if depName == name mig
+                then Left . CircularDependency $ mig :| [ ]
+                else pure ()
+
+            -- Check that we have at least one required replacement.
+            -- Note that we don't have to deal with the empty list,
+            -- as that has already been handled.
+            checkForRequiredReplacement :: [ Replaces ] -> M ()
+            checkForRequiredReplacement repls =
+                if any (\r -> rOptional r == Required) repls
+                then pure ()
+                else Left $ NoRequiredReplacement mig
+
+            -- Check that we do not have duplicate replacements
+            checkDupeReplacement :: Set K -> Replaces -> M (Set K)
+            checkDupeReplacement st rep =
+                if Set.member (rName rep) st
+                then Left $ DuplicateReplaces mig (CI.original (rName rep))
+                else pure $ Set.insert (rName rep) st
+
+            -- Check that a replacement does not exist.
+            checkReplacesDoesNotExist :: Replaces -> M ()
+            checkReplacesDoesNotExist rep =
+                case Map.lookup (rName rep) migMap of
+                    Nothing   -> pure ()
+                    Just rmig -> Left $ ReplacedStillExists mig rmig
 
     -- | Turn a MigMap into a set of graphs, one per phase.
     makeGraphs :: MigMap -> IntMap Grph
@@ -370,13 +348,12 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
                                 Left . CircularDependency $
                                     fixup <$> (x :| xs)
 
-            fixup :: Graph.Vertex -> Text
+            fixup :: Graph.Vertex -> Migration
             fixup vtx = 
                 let node :: Node
                     node = getNode grph vtx
                 in
-                CI.original (getKey node)
-
+                getMigration node
 
     -- | Convert a tuple to a Node structure.
     toNode :: (Migration, K, [ K ]) -> Node
