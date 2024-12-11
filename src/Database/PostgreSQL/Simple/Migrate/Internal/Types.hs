@@ -1,5 +1,7 @@
 {-# LANGUAGE DeriveGeneric       #-}
+{-# LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- |
@@ -27,7 +29,8 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     setPhase,
     addReplaces,
     setReplacesOptional,
-    Verbose(..)
+    Verbose(..),
+    showMigration
 ) where
 
     import           Control.DeepSeq
@@ -35,10 +38,13 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     import qualified Data.ByteString.Char8            as Char8
     import           Data.CaseInsensitive             (CI)
     import qualified Data.CaseInsensitive             as CI
-    import           Data.String                      (IsString(..))
+    import           Data.Maybe                       (fromMaybe)
+    import           Data.String                      (IsString (..))
     import           Data.Text                        (Text)
+    import qualified Data.Text                        as Text
     import           Database.PostgreSQL.Simple.Types (Query (..))
     import           GHC.Generics
+    import qualified GHC.Stack                        as Stack
     import qualified Test.QuickCheck                  as QC
 
     import Database.PostgreSQL.Simple.Migrate.Internal.Finger
@@ -53,6 +59,23 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
 
     instance NFData Optional where
         rnf = rwhnf
+
+    instance QC.Arbitrary Optional where
+        arbitrary = QC.elements [ Optional, Required ]
+        shrink _ = []
+
+    instance Aeson.ToJSON Optional where
+        toJSON Optional = Aeson.toJSON True
+        toJSON Required = Aeson.toJSON False
+        toEncoding Optional = Aeson.toEncoding True
+        toEncoding Required = Aeson.toEncoding False
+
+    instance Aeson.FromJSON Optional where
+        parseJSON v = fixup <$> Aeson.parseJSON v
+            where
+                fixup :: Bool -> Optional
+                fixup True = Optional
+                fixup False = Required
 
     -- | A single database schema migration.
     -- 
@@ -136,7 +159,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
         -- `Database.PostgreSQL.Simple.Migrate.setPhase`
         -- function.
         
-        replaces :: [ Replaces ]
+        replaces :: [ Replaces ],
         -- ^ The list of migrations this migration replaces.
         --
         -- Defaults to the empty list by the
@@ -144,6 +167,16 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
         -- function.  Can be changed with the
         -- `Database.PostgreSQL.Simple.Migrate.addReplaces`
         -- function.
+        
+        fileName :: String,
+        -- ^ Filename of the makeMigration call.
+        --
+        -- Used to make error messages nicer.
+
+        lineNumber :: Int
+        -- ^ Line number of the makeMigration call.
+        --
+        -- Used to make error messages nicer.
         
     } deriving (Show, Read, Generic)
 
@@ -167,47 +200,27 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
                     `seq` rnf (dependencies mig)
                     `seq` rnf (phase mig)
                     `seq` rnf (replaces mig)
+                    `seq` rnf (fileName mig)
+                    `seq` rnf (lineNumber mig)
                     `seq` ()
 
     instance Aeson.FromJSON Migration where
         parseJSON = Aeson.withObject "Migration" $ \obj -> do
-            nmcs :: Text <- obj Aeson..: "name"
-            let nm :: CI Text
-                nm = CI.mk nmcs
-            cmds :: String <- obj Aeson..: "command"
-            let cmd :: Query
-                cmd = fromString cmds
-                fprint :: Text
-                fprint = makeFingerprint cmd
-            mdeps :: Maybe [ Text ] <- obj Aeson..:? "deps"
-            let deps :: [ CI Text ]
-                deps = case mdeps of
-                            Nothing -> []
-                            Just xs -> CI.mk <$> xs
-            mopt :: Maybe Bool <- obj Aeson..:? "optional"
-            let opt :: Optional
-                opt = case mopt of
-                            Nothing    -> Required
-                            Just True  -> Optional
-                            Just False -> Optional
-            mphase :: Maybe Int <- obj Aeson..:? "phase"
-            let phs :: Int
-                phs = case mphase of
-                        Nothing -> 1
-                        Just p  -> p
-            mreps :: Maybe [ Replaces ] <- obj Aeson..:? "replaces"
-            let reps :: [ Replaces ]
-                reps = case mreps of
-                        Nothing -> []
-                        Just xs -> xs
-            pure $ Migration {
-                    name = nm,
-                    command = cmd,
-                    fingerprint = fprint,
-                    dependencies = deps,
-                    optional = opt,
-                    phase = phs,
-                    replaces = reps }
+            name :: CI Text <- CI.mk <$> (obj Aeson..: "name")
+            command :: Query <- fromString <$> (obj Aeson..: "command")
+            let fingerprint :: Text
+                fingerprint = makeFingerprint command
+            dependencies :: [ CI Text ]
+                <- (fmap CI.mk . fromMaybe []) <$> (obj Aeson..:? "deps")
+            optional :: Optional
+                <- fromMaybe Required <$> (obj Aeson..:? "optional")
+            phase :: Int
+                <- fromMaybe 1 <$> (obj Aeson..:? "phase")
+            replaces :: [ Replaces ]
+                <- fromMaybe [] <$> (obj Aeson..:? "replaces")
+            fileName :: String <- obj Aeson..: "fileName"
+            lineNumber :: Int <- obj Aeson..: "lineNumber"
+            pure $ Migration { .. }
 
     toObject :: Aeson.KeyValue kv => Migration -> [ kv ]
     toObject mig =
@@ -228,56 +241,118 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
         ++ (case replaces mig of
                 [] -> []
                 rs -> [ "replaces" Aeson..= rs ])
+        ++ [ "fileName" Aeson..= fileName mig,
+                "lineNumber" Aeson..= lineNumber mig ]
 
     instance Aeson.ToJSON Migration where
         toJSON mig = Aeson.object $ toObject mig
         toEncoding mig = Aeson.pairs . mconcat $ toObject mig
 
-    alnumString :: IsString s => QC.Gen s
-    alnumString = do
-            x :: Char <- QC.elements $ ['A'..'Z'] ++ ['a'..'z']
-            xs :: String <- QC.listOf alnum
-            pure $ fromString (x:xs)
-        where
-            alnum :: QC.Gen Char
-            alnum = QC.elements $
-                            ['A'..'Z']++['a'..'z']++['0'..'9']++ ['_']
+
+
+    class Stringish a where
+        toASCII :: a -> QC.ASCIIString
+        fromASCII :: QC.ASCIIString -> a
+
+    instance Stringish String where
+        toASCII = QC.ASCIIString
+        fromASCII = QC.getASCIIString
+
+    instance Stringish Text where
+        toASCII = toASCII . Text.unpack
+        fromASCII = Text.pack . fromASCII
+
+    instance (CI.FoldCase a, Stringish a) => Stringish (CI a) where
+        toASCII = toASCII . CI.original
+        fromASCII = CI.mk . fromASCII
+
+    instance Stringish Char8.ByteString where
+        toASCII = toASCII . Char8.unpack
+        fromASCII = Char8.pack . fromASCII
+
+    instance Stringish Query where
+        toASCII = toASCII . fromQuery
+        fromASCII = Query . fromASCII
+
+    data ArbReplaces = ArbReplaces {
+        arbRName :: QC.ASCIIString,
+        arbRFingerprint :: QC.ASCIIString,
+        arbROptional :: Optional }
+        deriving (Generic)
+
+    instance QC.Arbitrary ArbReplaces where
+        arbitrary = do
+            arbRName <- QC.arbitrary
+            arbRFingerprint <- QC.arbitrary
+            arbROptional <- QC.arbitrary
+            pure $ ArbReplaces { .. }
+        shrink = QC.genericShrink
+
+    fromArbReplaces :: ArbReplaces -> Replaces
+    fromArbReplaces arb = Replaces {
+        rName = fromASCII (arbRName arb),
+        rFingerprint = fromASCII (arbRFingerprint arb),
+        rOptional = arbROptional arb }
+
+    toArbReplaces :: Replaces -> ArbReplaces
+    toArbReplaces rep = ArbReplaces {
+        arbRName = toASCII (rName rep),
+        arbRFingerprint = toASCII (rFingerprint rep),
+        arbROptional = rOptional rep }
+
+    data ArbMig = ArbMig {
+        arbName :: QC.ASCIIString,
+        arbCommand :: QC.ASCIIString,
+        arbFingerprint :: QC.ASCIIString,
+        arbDependencies :: [ QC.ASCIIString ],
+        arbOptional :: Optional,
+        arbPhase :: Int,
+        arbReplaces :: [ ArbReplaces ],
+        arbFileName :: QC.ASCIIString,
+        arbLineNumber :: Int  }
+        deriving (Generic)
+
+    instance QC.Arbitrary ArbMig where
+        arbitrary = do
+            arbName :: QC.ASCIIString <- QC.arbitrary
+            arbCommand :: QC.ASCIIString <- QC.arbitrary
+            arbFingerprint :: QC.ASCIIString <- QC.arbitrary
+            arbDependencies :: [ QC.ASCIIString ] <- QC.listOf QC.arbitrary
+            arbOptional :: Optional <- QC.arbitrary
+            arbPhase :: Int <- QC.arbitrary
+            arbReplaces :: [ ArbReplaces ] <- QC.listOf QC.arbitrary
+            arbFileName :: QC.ASCIIString <- QC.arbitrary
+            arbLineNumber :: Int <- QC.arbitrary
+            pure $ ArbMig { .. }
+        shrink = QC.genericShrink
+
+    fromArbMig :: ArbMig -> Migration
+    fromArbMig arb = Migration {
+        name = fromASCII (arbName arb),
+        command = fromASCII (arbCommand arb),
+        fingerprint = fromASCII (arbFingerprint arb),
+        dependencies = fromASCII <$> arbDependencies arb,
+        optional = arbOptional arb,
+        phase = arbPhase arb,
+        replaces = fromArbReplaces <$> arbReplaces arb,
+        fileName = fromASCII (arbFileName arb),
+        lineNumber = arbLineNumber arb }
+
+    toArbMig :: Migration -> ArbMig
+    toArbMig mig = ArbMig {
+        arbName = toASCII (name mig),
+        arbCommand = toASCII (command mig),
+        arbFingerprint = toASCII (fingerprint mig),
+        arbDependencies = toASCII <$> dependencies mig,
+        arbOptional = optional mig,
+        arbPhase = phase mig,
+        arbReplaces = toArbReplaces <$> replaces mig,
+        arbFileName = toASCII (fileName mig),
+        arbLineNumber = lineNumber mig }
 
     instance QC.Arbitrary Migration where
-        arbitrary = do
-            nm :: CI Text <- alnumString
-            cmd :: Query  <- alnumString
-            let fprint :: Text
-                fprint = makeFingerprint cmd
-            deps :: [ CI Text ] <- QC.listOf alnumString
-            opt :: Optional <- QC.elements [ minBound .. maxBound ]
-            phs :: Int <- QC.arbitrary
-            reps :: [ Replaces ] <- QC.listOf QC.arbitrary
-            pure $ Migration {
-                name = nm,
-                command = cmd,
-                fingerprint = fprint,
-                dependencies = deps,
-                optional = opt,
-                phase = phs,
-                replaces = reps }
-        shrink mig = init $
-            Migration
-                (name mig)
-                (command mig)
-                (fingerprint mig)
-                <$> (case dependencies mig of
-                        [] -> pure []
-                        xs -> [ [], xs ] )
-                <*> (case optional mig of
-                        Required -> pure Required
-                        Optional -> [ Required, Optional ])
-                <*> (case phase mig of
-                        1 -> [ 1 ]
-                        p -> [ 1, p ])
-                <*> (case replaces mig of
-                        [] -> pure []
-                        xs -> [ [], xs ])
+        arbitrary = fromArbMig <$> QC.arbitrary
+        shrink mig = fromArbMig <$> QC.shrink (toArbMig mig)
 
     -- | Create a migration.
     --
@@ -310,19 +385,30 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     -- Note that no arguments are allowed (execute_ is called,
     -- not execute).
     --
-    makeMigration :: Text
+    makeMigration :: Stack.HasCallStack
+                        => Text
                         -- ^ Migration name
                         -> Query
                         -- ^ Migration command
                         -> Migration
-    makeMigration nm cmd = Migration {
-                                name         = CI.mk nm,
-                                command      = cmd,
-                                fingerprint  = makeFingerprint cmd,
-                                optional     = Required,
-                                phase        = 1,
-                                dependencies = [],
-                                replaces     = [] }
+    makeMigration nm cmd =
+            Migration {
+                name         = CI.mk nm,
+                command      = cmd,
+                fingerprint  = makeFingerprint cmd,
+                optional     = Required,
+                phase        = 1,
+                dependencies = [],
+                replaces     = [],
+                fileName     = Stack.srcLocFile loc,
+                lineNumber   = Stack.srcLocStartLine loc }
+        where
+            loc :: Stack.SrcLoc
+            loc = case Stack.getCallStack Stack.callStack of
+                    _ : (_, x) : _ -> x
+                    -- The following should never happen.
+                    _              -> error
+                                        "Invalid call stack in makeMigration!"
 
 
     -- | Data about a replaced migration.
@@ -378,20 +464,8 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
         toEncoding rep = Aeson.pairs . mconcat $ replacesObject rep
 
     instance QC.Arbitrary Replaces where
-        arbitrary = do
-            nm :: CI Text <- alnumString
-            cmd :: Query <- alnumString
-            let fprint :: Text
-                fprint = makeFingerprint cmd
-            opt :: Optional <- QC.elements [ minBound .. maxBound ]
-            pure $ Replaces {
-                        rName = nm,
-                        rFingerprint = fprint,
-                        rOptional = opt }
-        shrink rep =
-            case rOptional rep of
-                Optional -> [ rep { rOptional = Required } ]
-                Required -> []
+        arbitrary = fromArbReplaces <$> QC.arbitrary
+        shrink rep = fromArbReplaces <$> QC.shrink (toArbReplaces rep)
 
     -- | Make a Replaces data structure.
     --
@@ -539,4 +613,19 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
             | Detail
         deriving (Show, Read, Ord, Eq, Enum, Bounded)
 
+
+
+    -- | Convert a mgiration structure into a string
+    --
+    -- This includes the migration name, file name, and line number.
+    --
+    -- This function is used for creating error messages.
+    --
+    showMigration :: Migration -> String
+    showMigration mig = show (CI.original (name mig))
+                        ++ " ("
+                        ++ fileName mig
+                        ++ ":"
+                        ++ show (lineNumber mig)
+                        ++ ")"
 
