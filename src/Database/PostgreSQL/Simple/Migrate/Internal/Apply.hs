@@ -20,23 +20,21 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
     check
 ) where
 
-    import           Control.DeepSeq                        (force)
     import qualified Control.Exception                      as Exception
     import           Control.Monad                          (when)
     import qualified Data.CaseInsensitive                   as CI
+    import qualified Data.Foldable                          as Foldable
     import           Data.Int                               (Int64)
-    import           Data.Map.Strict                        (Map)
-    import qualified Data.Map.Strict                        as Map
     import           Data.String
     import           Data.Text                              (Text)
     import qualified Database.PostgreSQL.Simple             as PG
     import           Database.PostgreSQL.Simple.SqlQQ
     import qualified Database.PostgreSQL.Simple.Transaction as PG
+    import qualified Database.PostgreSQL.Simple.Types       as PG
 
     -- These screw up the formatting, so they get their own,
     -- unformatted, block.
     import Database.PostgreSQL.Simple.Migrate.Internal.Error
-    import Database.PostgreSQL.Simple.Migrate.Internal.Monad
     import Database.PostgreSQL.Simple.Migrate.Internal.Order
     import Database.PostgreSQL.Simple.Migrate.Internal.Types
 
@@ -63,6 +61,13 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                 -- ^ The database connection.
                 --
 
+                -> Bool
+                -- ^ Whether to block waiting for the advisory lock
+                --
+                -- If True, this function will block indefinitely, waiting
+                -- to acquire the advisory lock.  If Flase, this function
+                -- will return the `MigrationsError` value `Locked`.
+
                 -> IO (Either MigrationsError ())
                 -- ^ Returns a `MigrationsError` if there was an error.
                 --
@@ -78,55 +83,41 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                 --
                 -- mtl stack.
                 --
-    apply _      []    _    = pure $ Left EmptyMigrationList
-    apply logmsg migs1 conn = runM go logmsg
-        where
-            go :: M logmsg ()
-            go = do
-                logM Low "Ordering migrations."
-                case checkMigrations migs1 of
-                    Left err       -> throwM err
-                    Right miggraph -> do
-                        let migs2 :: [ Migration ]
-                            migs2 = orderMigrations miggraph
-
-                        -- Do *all* the ordering work before opening
-                        -- the connection!
-                        migs <- liftM . Exception.evaluate $ force migs2
-
-                        -- Make the connection and apply the migrations
-                        go2 migs
-
-            go2 :: [ Migration ] -> M logmsg ()
-            go2 migs = do
-                logM Low "Initializing database if necessary."
-                withTransactionLevelM PG.Serializable conn $ do
-                    b <- isInitialized conn
-                    when (not b) $ initialize conn
-
-                xmigs <- getExistingMigrations conn
-                case checkExistingMigrations xmigs migs of
-                    Left err     -> throwM err
-                    Right needed -> do
-                        logM Low "Applying migrations."
-                        doApplies Nothing needed
-
-            doApplies :: Maybe Int
-                            -> [ Migration ]
-                            -> M logmsg ()
-            doApplies _        []       = pure ()
-            doApplies Nothing  (m : ms) = do
-                logM Medium $ "Starting phase "
-                                <> (fromString (show (phase m)))
-                applyMigration conn m
-                doApplies (Just (phase m)) ms
-            doApplies (Just p) (m : ms) = do
-                when (p < phase m) $
-                    logM Medium $ "Starting phase "
-                                    <> (fromString (show (phase m)))
-                applyMigration conn m
-                doApplies (Just (phase m)) ms
-
+    apply _      []   _    _     = pure $ Left EmptyMigrationList
+    apply logmsg migs conn block = Exception.try $ do
+        withLock logmsg conn block $ do
+            logmsg Low $ pure "Checking if the database is initialized."
+            initialized <- isInitialized logmsg conn
+            aps :: [ (Text, Text) ]
+                <- if (not initialized)
+                    then do
+                        logmsg Low $
+                            pure "Initializing database."
+                        initialize logmsg conn
+                        pure []
+                    else do
+                        logmsg Low $ pure "Database is initialized."
+                        logmsg Low . pure $
+                            "Fetching already applied migrations."
+                        getAppliedMigrations logmsg conn
+            logmsg Low $ pure "Ordering migrations."
+            let ord :: Either
+                            MigrationsError
+                            (Maybe Migration, [ (Apply, Migration) ])
+                ord = orderMigrations migs aps
+            case ord of
+                Left err       -> Exception.throw err
+                Right (_, [])  -> do
+                    logmsg Low $ pure "No migrations need to be applied."
+                Right (_, mgs) -> do
+                    logmsg Low $ pure "Applying migrations."
+                    _ <- Foldable.foldlM
+                            (applyMigration logmsg conn)
+                            Nothing
+                            mgs
+                    pure ()
+            logmsg Low $ pure "Complete."
+            pure ()
 
     -- | Check that a set of migrations has been applied to a database.
     --
@@ -155,6 +146,13 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                 -- ^ The database connection.
                 --
 
+                -> Bool
+                -- ^ Whether to block waiting for the advisory lock
+                --
+                -- If True, this function will block indefinitely, waiting
+                -- to acquire the advisory lock.  If Flase, this function
+                -- will return the `MigrationsError` value `Locked`.
+
                 -> IO (Either MigrationsError ())
                 -- ^ Returns a MigrationsError if the database is not
                 -- consistent with the given list of migrations.
@@ -171,312 +169,231 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                 --
                 -- mtl stack.
                 --
-    check _      []    _   = pure $ Left EmptyMigrationList
-    check logmsg migs conn = runM go logmsg
+    check _      []   _    _     = pure $ Left EmptyMigrationList
+    check logmsg migs conn block = Exception.try $ do
+        aps :: [ (Text, Text) ] <-
+            withLock logmsg conn  block $ do
+                logmsg Low $ pure "Checking if the database is initialized."
+                initialized <- isInitialized logmsg conn
+                if initialized
+                then do
+                    logmsg Low $ pure "Database is initialized."
+                    logmsg Low $ pure "Fetching already applied migrations."
+                    getAppliedMigrations logmsg conn
+                else Exception.throw Uninitialized
+        logmsg Low $ pure "Ordering migrations."
+        let ord :: Either
+                        MigrationsError
+                        (Maybe Migration, [ (Apply, Migration) ])
+            ord = orderMigrations migs aps
+        case ord of
+            Left err        -> Exception.throw err
+            Right (mmig, _) ->
+                case mmig of
+                    Just mig -> Exception.throw $ RequiredUnapplied mig
+                    Nothing  -> pure ()
+        logmsg Low $ pure "Complete."
+        pure ()
+
+
+    -- | Acquire and hold a PosgreSQL advisory lock, to synchronize updates to
+    -- the database schema.
+    --
+    -- Note: we release the lock when we exit.  But even if the program
+    -- exits without cleanup (i.e. via a SIGKILL or the like), the advisory
+    -- lock will be released when the pgsql session is closed (i.e. when
+    -- the TCP connection is closed).
+    --
+    withLock :: forall logmsg a .
+                (IsString logmsg
+                , Semigroup logmsg)
+                => (Verbose -> IO logmsg -> IO ())
+                -> PG.Connection
+                -> Bool
+                -> IO a
+                -> IO a
+    withLock logmsg conn block act =
+            Exception.bracket lock unlock (\() -> act)
         where
-            go :: M logmsg ()
-            go = do
-                logM Low "Ordering migrations."
-                case checkMigrations migs of
-                    Left err -> throwM err
-                    Right _  -> go2
-
-            go2 :: M logmsg ()
-            go2 = do
-                logM Low "Checking if database is initialized."
-                b <- isInitialized conn
-                if (not b)
-                then throwM Uninitialized
+            lock :: IO ()
+            lock = do
+                logmsg Medium (pure "Acquiring database advisory lock.")
+                if block
+                then do
+                    _ :: [ PG.Only PG.Null ]
+                        <- pgQuery logmsg conn
+                            [sql| SELECT pg_advisory_lock(?); |]
+                            (PG.Only lockId)
+                    pure ()
                 else do
-                    xmigs <- getExistingMigrations conn
-                    case checkExistingMigrations xmigs migs of
-                        Left err     -> throwM err
-                        Right needed ->
-                            case requireds needed of
-                                [] -> pure ()
-                                xs -> throwM (MissingRequireds xs)
+                    r :: [ PG.Only Bool ]
+                        <- pgQuery logmsg conn
+                            [sql| SELECT pg_try_advisory_lock(?); |]
+                            (PG.Only lockId)
+                    case r of
+                        (PG.Only True) : _ -> pure ()
+                        _                  -> Exception.throw Locked
+                logmsg Medium (pure "Lock acquired.")
 
+
+            unlock :: () -> IO ()
+            unlock () = do
+                -- Do our best to unlock the advisory lock.  If this
+                -- fails, do not throw an exception.
+                logmsg Medium (pure "Releasing database advisory lock.")
+                _ :: Either Exception.SomeException [ PG.Only PG.Null ]
+                     <- Exception.try $
+                        pgQuery logmsg conn
+                            [sql| SELECT pg_advisory_unlock(?); |]
+                            (PG.Only lockId)
+                pure ()
+
+            -- This is the lock id used by node-pg-migrate.  Which I hope
+            -- is some form of standard, well-known identifier.
+            lockId :: Int64
+            lockId = 7241865325823964
+
+    -- | Check to see if we are initialized.
+    --
+    -- I.e. that the schema table has been created.
     isInitialized :: forall logmsg .
-                        (IsString logmsg
-                        , Semigroup logmsg)
-                        => PG.Connection
-                        -> M logmsg Bool
-    isInitialized conn = do
+                    (IsString logmsg
+                    , Semigroup logmsg)
+                    => (Verbose -> IO logmsg -> IO ())
+                    -> PG.Connection
+                    -> IO Bool
+    isInitialized logmsg conn = do
         r1 :: [ PG.Only Bool ]
-            <- myQuery_ conn
+            <- pgQuery logmsg conn
                 [sql|   SELECT EXISTS (
                             SELECT 1
                             FROM pg_tables
                             WHERE tablename = 'schema_migrations'
                             LIMIT 1
                         ); |]
+                ()
         pure $
             case r1 of
                 (PG.Only True) : _ -> True
                 _                  -> False
 
+
+    -- | Initialize the database.
+    --
+    -- I.e. create the schema table.
+    --
     initialize :: forall logmsg .
                     (IsString logmsg
                     , Semigroup logmsg)
-                    => PG.Connection
-                    -> M logmsg ()
-    initialize conn = do
-        myExecute_ conn
-            [sql|
-                CREATE TABLE IF NOT EXISTS schema_migrations(
-                    name TEXT PRIMARY KEY,
-                    fingerprint CHAR(44) UNIQUE NOT NULL,
-                    executed_at TIMESTAMP WITH TIME ZONE
-                        NOT NULL DEFAULT NOW());
-            |]
-        myExecute_ conn
-            [sql|
-                CREATE INDEX ON schema_migrations(executed_at);
-            |]
-
-    getExistingMigrations :: forall logmsg .
-                                (IsString logmsg
-                                , Semigroup logmsg)
-                                => PG.Connection
-                                -> M logmsg (Map Text Text)
-    getExistingMigrations conn = do
-        r :: [ (Text, Text) ]
-            <- myQuery_ conn
-                [sql| SELECT name, fingerprint FROM schema_migrations; |]
-        pure $ Map.fromList r
-
-    requireds :: [ Migration ] -> [ Text ]
-    requireds = fmap getName . filter isRequired
-        where
-                isRequired :: Migration -> Bool
-                isRequired mig = optional mig == Required
-
-                getName :: Migration -> Text
-                getName = CI.original . name
-
-    data CheckState =
-        Unknown
-        | OptionExists
-        | RequiredMissing Text
-        | RequiredExists
-
-    checkExistingMigrations :: Map Text Text
-                                -> [ Migration ]
-                                -> Either MigrationsError [ Migration ]
-    checkExistingMigrations xmigs migs1 = snd <$> runN (go [] migs1) xmigs
-        where
-            go :: [ Migration ] -> [ Migration ] -> N [ Migration ]
-            go acc [] = do
-                checkForUnknownMigrations
-                pure $ reverse acc
-            go acc (m:ms) = do
-                b :: Bool <- checkMigration m
-                if b
-                then go (m : acc) ms
-                else go acc ms
-
-    checkForUnknownMigrations :: N ()
-    checkForUnknownMigrations = do
-        remain :: Map Text Text <- getN
-        if (Map.null remain)
-        then pure ()
-        else throwN . UnknownMigrations $ Map.keys remain
-
-    -- Returns True if the migration needs to be applied.
-    checkMigration :: Migration -> N Bool
-    checkMigration mig = do
-        migApplied <- checkMigrationFingerprint mig
-        case replaces mig of
-            []               -> pure ()
-            _
-                | migApplied -> checkReplacesGone mig
-                | otherwise  -> checkReplacedMigrations mig
-        pure (not migApplied)
-
-    -- Throws a FingerprintMigration error
-    --
-    -- Returns True if the migration has been applied.
-    checkMigrationFingerprint :: Migration -> N Bool
-    checkMigrationFingerprint mig = do
-        migs :: Map Text Text <- getN
-        let nm :: Text
-            nm = CI.foldedCase (name mig)
-        case Map.lookup nm migs of
-            Nothing -> pure False
-            Just fp
-                | fp == fingerprint mig -> do
-                    putN $ Map.delete nm migs
-                    pure True
-                | otherwise             ->
-                    throwN $ FingerprintMismatch
-                                (CI.original (name mig))
-
-    -- Throws a ReplacedMigrationsExist error
-    checkReplacesGone :: Migration -> N ()
-    checkReplacesGone mig = mapM_ go (replaces mig)
-        where
-            go :: Replaces -> N ()
-            go rep = do
-                migs :: Map Text Text <- getN
-                case Map.lookup (CI.foldedCase (rName rep)) migs of
-                    Nothing -> pure ()
-                    Just _  -> throwN $ ReplacedMigrationsExist
-                                            (CI.original (name mig))
-                                            (CI.original (rName rep))
-
-    -- Throws a ReplacedMigrations error
-    checkReplacedMigrations :: Migration -> N ()
-    checkReplacedMigrations mig = loop Unknown (replaces mig)
-        where
-            loop :: CheckState -> [ Replaces ] -> N ()
-            loop _ []       = pure ()
-            loop s (r : rs) = do
-                migs <- getN
-                let nm :: Text
-                    nm = CI.foldedCase (rName r)
-                case Map.lookup nm migs of
-                    Nothing -> missing r s rs
-                    Just fp
-                        | fp == rFingerprint r -> do
-                            putN $ Map.delete nm migs
-                            exists r s rs
-                        | otherwise            ->
-                            throwN $ ReplacedFingerprint
-                                        (CI.original (name mig))
-                                        (CI.original (rName r))
-
-            -- The replacement is missing.
-            missing :: Replaces -> CheckState -> [ Replaces ] -> N ()
-            missing r
-                | rOptional r == Optional = loop
-                | otherwise               = missingRequired r
-
-            -- A required replacement is missing
-            missingRequired r Unknown               rs =
-                loop (RequiredMissing (CI.original (rName r))) rs
-            missingRequired r OptionExists          _  =
-                throwN $ RequiredReplacementMissing
-                                (CI.original (name mig))
-                                (CI.original (rName r))
-            missingRequired _ (RequiredMissing rnm) rs =
-                loop (RequiredMissing rnm) rs
-            missingRequired r RequiredExists        _  =
-                throwN $ RequiredReplacementMissing
-                                (CI.original (name mig))
-                                (CI.original (rName r))
-
-            -- The replacement exists.
-            exists :: Replaces -> CheckState -> [ Replaces ] -> N ()
-            exists r
-                | rOptional r  == Optional = existsOptional
-                | otherwise                = existsRequired
-
-            -- An optional replaced migration exists.
-            existsOptional :: CheckState
-                                -> [ Replaces ]
-                                -> N ()
-            existsOptional Unknown               rs =
-                loop OptionExists rs
-            existsOptional OptionExists          rs =
-                loop OptionExists rs
-            existsOptional (RequiredMissing rnm) _  =
-                throwN $ RequiredReplacementMissing
-                            (CI.original (name mig))
-                            rnm
-            existsOptional RequiredExists        rs =
-                loop RequiredExists rs
-
-            -- A required replaced migration exists.
-            existsRequired :: CheckState
-                                -> [ Replaces ]
-                                -> N ()
-            existsRequired Unknown               rs =
-                loop RequiredExists rs
-            existsRequired OptionExists          rs =
-                loop RequiredExists rs
-            existsRequired (RequiredMissing rnm) _  =
-                throwN $ RequiredReplacementMissing
-                            (CI.original (name mig))
-                            rnm
-            existsRequired RequiredExists        rs =
-                loop RequiredExists rs
-
-    applyMigration :: forall logmsg .
-                        (IsString logmsg
-                        , Semigroup logmsg)
-                        => PG.Connection
-                        -> Migration
-                        -> M logmsg ()
-    applyMigration conn mig = do
-        logM High $ "Applying migration "
-                        <> (fromString (show (CI.original (name mig))))
-        -- Note that we don't need to check for any errors, we can just
-        -- plow ahead.
-        withTransactionLevelM PG.Serializable conn $ do
-            case replaces mig of
-                [] -> myExecute_ conn (command mig)
-                repls -> do
-                    r <- myExecute conn
-                            [sql| DELETE FROM schema_migrations
-                                    WHERE name IN ?; |]
-                            (PG.Only
-                                (PG.In
-                                    (fmap
-                                        (CI.foldedCase . rName)
-                                        repls)))
-                    when (r == 0) $
-                        myExecute_ conn (command mig)
-            _ <- myExecute conn
-                [sql| INSERT INTO schema_migrations
-                        (name, fingerprint) VALUES (?, ?); |]
-                (CI.foldedCase (name mig), fingerprint mig)
+                    => (Verbose -> IO logmsg -> IO ())
+                    -> PG.Connection
+                    -> IO ()
+    initialize logmsg conn =
+        PG.withTransactionLevel PG.Serializable conn $ do
+            _ <- pgExecute logmsg conn
+                [sql|
+                    CREATE TABLE IF NOT EXISTS schema_migrations(
+                        name TEXT PRIMARY KEY,
+                        fingerprint CHAR(44) UNIQUE NOT NULL,
+                        executed_at TIMESTAMP WITH TIME ZONE
+                            NOT NULL DEFAULT NOW());
+                |] ()
+            _ <- pgExecute logmsg conn
+                [sql|
+                    CREATE INDEX ON schema_migrations(executed_at);
+                |] ()
             pure ()
 
 
-    logQuery :: forall q logmsg .
-                    (IsString logmsg
-                    , Semigroup logmsg
-                    , PG.ToRow q)
-                    => PG.Connection
-                    -> PG.Query
-                    -> q
-                    -> M logmsg ()
-    logQuery conn qry q = do
-        logM' Detail $ do
-            bs <- PG.formatQuery conn qry q
-            pure $ "Executing: " <> fromString (show bs)
+    -- | Read the list of already applied migrations (and their fingerprints)
+    -- from the database.
+    getAppliedMigrations :: forall logmsg .
+                                (IsString logmsg
+                                , Semigroup logmsg)
+                                => (Verbose -> IO logmsg -> IO ())
+                                -> PG.Connection
+                                -> IO [ (Text, Text) ]
+    getAppliedMigrations logmsg conn =
+        pgQuery logmsg conn
+            [sql| SELECT (name, fingerprint) FROM schema_migrations; |] ()
 
-    myQuery_ :: forall r logmsg .
+    -- | Apply a migration.
+    applyMigration :: forall logmsg .
+                        (IsString logmsg
+                        , Semigroup logmsg)
+                        => (Verbose -> IO logmsg -> IO ())
+                        -> PG.Connection
+                        -> Maybe Int
+                        -> (Apply, Migration)
+                        -> IO (Maybe Int)
+    applyMigration logmsg conn mphase (app, mig) = do
+        let newPhase :: Bool
+            newPhase = case mphase of
+                            Nothing -> True
+                            Just p  -> p < phase mig
+        when newPhase $ logmsg Medium 
+                            (pure $ "Starting phase "
+                                        <> (fromString (show (phase mig))))
+        logmsg High (pure $ "Applying migration "
+                                <> (fromString (showMigration mig)))
+        r <- Exception.try $ 
+            PG.withTransactionLevel PG.Serializable conn $ do
+                case app of
+                    Apply   -> do
+                        _ <- pgExecute logmsg conn (command mig) ()
+                        pure ()
+                    Replace -> do
+                        _ <- pgExecute logmsg conn
+                                [sql| DELETE FROM schema_migrations
+                                        WHERE name IN ?; |]
+                                (PG.Only
+                                    (PG.In
+                                        (fmap
+                                            (CI.foldedCase . rName)
+                                            (replaces mig))))
+                        pure ()
+                _ <- pgExecute logmsg conn
+                    [sql| INSERT INTO schema_migrations
+                            (name, fingerprint) VALUES (?, ?); |]
+                    (CI.foldedCase (name mig), fingerprint mig)
+                pure ()
+        case r of
+            Right ()                         -> pure $ Just (phase mig)
+            Left (Exception.SomeException e) -> do
+                logmsg Low (pure $ fromString $
+                                "Exception thrown in apply migration "
+                                ++ showMigration mig ++ ": " ++ show e)
+                Exception.throw e
+
+
+    pgQuery :: forall logmsg q r .
                 (IsString logmsg
                 , Semigroup logmsg
+                , PG.ToRow q
                 , PG.FromRow r)
-                => PG.Connection
+                => (Verbose -> IO logmsg -> IO ())
+                -> PG.Connection
                 -> PG.Query
-                -> M logmsg [ r ]
-    myQuery_ conn qry = do
-        logQuery conn qry ()
-        liftM $ PG.query_ conn qry
+                -> q
+                -> IO [ r ]
+    pgQuery logmsg conn qry q = do
+        logmsg Detail $ do
+            bs <- PG.formatQuery conn qry q
+            pure $ "Executing: " <> fromString (show bs)
+        PG.query conn qry q
 
-    myExecute :: forall q logmsg .
-                    (IsString logmsg
-                    , Semigroup logmsg
-                    , PG.ToRow q)
-                    => PG.Connection
-                    -> PG.Query
-                    -> q
-                    -> M logmsg Int64
-    myExecute conn qry q = do
-        logQuery conn qry q
-        liftM $ PG.execute conn qry q
-
-    myExecute_ :: forall logmsg .
-                    (IsString logmsg
-                    , Semigroup logmsg)
-                    => PG.Connection
-                    -> PG.Query
-                    -> M logmsg ()
-    myExecute_ conn qry = do
-        logQuery conn qry ()
-        _ <- liftM $ PG.execute_ conn qry
-        pure ()
+    pgExecute :: forall logmsg q .
+                (IsString logmsg
+                , Semigroup logmsg
+                , PG.ToRow q)
+                => (Verbose -> IO logmsg -> IO ())
+                -> PG.Connection
+                -> PG.Query
+                -> q
+                -> IO Int64
+    pgExecute logmsg conn qry q = do
+        logmsg Detail $ do
+            bs <- PG.formatQuery conn qry q
+            pure $ "Executing: " <> fromString (show bs)
+        PG.execute conn qry q
 

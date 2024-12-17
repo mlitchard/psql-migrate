@@ -20,9 +20,9 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Error(
 ) where
 
     import           Control.DeepSeq
-    import qualified Data.Foldable      as Foldable
+    import           Control.Exception  (Exception)
     import qualified Data.List          as List
-    import           Data.List.NonEmpty (NonEmpty(..))
+    import           Data.List.NonEmpty (NonEmpty (..))
     import           Data.String
     import           Data.Text          (Text)
 
@@ -62,97 +62,107 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Error(
         | DuplicateReplaces Migration Text
 
         -- | Replaced migration still exists
-        | ReplacedStillExists Migration Migration
+        | ReplacedStillInList Migration Migration
 
         -- | No migrations in the list.
         | EmptyMigrationList
+
+        -- | The given name exists multiple times as applied in the
+        -- database.
+        | DuplicateExisting Text
 
         -- | There were migrations in the database not in the list.
         | UnknownMigrations [ Text ]
 
         -- | The fingerprint of the given migration didn't match what
         -- was in the database.
-        | FingerprintMismatch Text
+        | FingerprintMismatch Migration Text
 
         -- | The given migration has been applied to the database, but
         -- one of the migrations it replaces still exist.
-        | ReplacedMigrationsExist Text Text
+        | ReplacedStillInDB Migration Text
 
         -- | The fingerprint of a replaced migration doesn't match what
         -- is in the database.
-        | ReplacedFingerprint Text Text
+        | ReplacedFingerprint Migration Text
 
         -- | A required replacement is missing, when one or more other
         -- replacements exist.
-        | RequiredReplacementMissing Text Text
+        | RequiredReplacementMissing Migration Text
+
+        -- | The advisory lock is locked.
+        | Locked
 
         -- | The database is not initialized,
         -- `Database.PostgreSQL.Simple.Migrate.Internal.Apply.apply` has
         -- never been called.
         --
         -- Only used by
-        -- `Database.PostgreSQL.Simple.Migrate.Internal.Apply.check`.
+        -- `Database.PostgreSQL.Simple.Migrate.check`.
         --
         | Uninitialized
 
-        -- | There are unapplied but required migrations. 
+        -- | A required migration has not been applied to the database.
         --
         -- Only used by
-        -- `Database.PostgreSQL.Simple.Migrate.Internal.Apply.check`.
+        -- `Database.PostgreSQL.Simple.Migrate.check`.
         --
-        | MissingRequireds [ Text ]
-        
+        | RequiredUnapplied Migration
         deriving (Show, Read, Ord, Eq)
 
+    instance Exception MigrationsError where
+
     instance NFData MigrationsError where
-        rnf (DuplicateMigrationName x y)    = rnf x `seq` rnf y `seq` ()
-        rnf (DuplicateDependency x y)       = rnf x `seq` rnf y `seq` ()
-        rnf (UnknownDependency x y)         = rnf x `seq` rnf y `seq` ()
-        rnf (RequiredDependsOnOptional x y) = rnf x `seq` rnf y `seq` ()
-        rnf (CircularDependency xs)         = rnf xs `seq` ()
-        rnf (LaterPhaseDependency x y)      = rnf x `seq` rnf y `seq` ()
-        rnf (NoRequiredReplacement t)       = rnf t
-        rnf (DuplicateReplaces x y)         = rnf x `seq` rnf y `seq` ()
-        rnf (ReplacedStillExists t u)       = rnf t `seq` rnf u `seq` ()
-        rnf EmptyMigrationList              = ()
-        rnf (UnknownMigrations xs)          = rnf xs `seq` ()
-        rnf (FingerprintMismatch x)         = rnf x `seq` ()
-        rnf (ReplacedMigrationsExist x y)   = rnf x `seq` rnf y `seq` ()
-        rnf (ReplacedFingerprint x y)       = rnf x `seq` rnf y `seq` ()
+        rnf (DuplicateMigrationName x y)     = rnf x `seq` rnf y `seq` ()
+        rnf (DuplicateDependency x y)        = rnf x `seq` rnf y `seq` ()
+        rnf (UnknownDependency x y)          = rnf x `seq` rnf y `seq` ()
+        rnf (RequiredDependsOnOptional x y)  = rnf x `seq` rnf y `seq` ()
+        rnf (CircularDependency xs)          = rnf xs `seq` ()
+        rnf (LaterPhaseDependency x y)       = rnf x `seq` rnf y `seq` ()
+        rnf (NoRequiredReplacement t)        = rnf t
+        rnf (DuplicateReplaces x y)          = rnf x `seq` rnf y `seq` ()
+        rnf (ReplacedStillInList t u)        = rnf t `seq` rnf u `seq` ()
+        rnf EmptyMigrationList               = ()
+        rnf (DuplicateExisting x)            = rnf x `seq` ()
+        rnf (UnknownMigrations xs)           = rnf xs `seq` ()
+        rnf (FingerprintMismatch x y)        = rnf x `seq` rnf y `seq` ()
+        rnf (ReplacedStillInDB x y)          = rnf x `seq` rnf y `seq` ()
+        rnf (ReplacedFingerprint x y)        = rnf x `seq` rnf y `seq` ()
         rnf (RequiredReplacementMissing x y) = rnf x `seq` rnf y `seq` ()
-        rnf Uninitialized                   = ()
-        rnf (MissingRequireds xs)           = rnf xs `seq` ()
+        rnf Locked                           = ()
+        rnf Uninitialized                    = ()
+        rnf (RequiredUnapplied x)            = rnf x `seq` ()
 
     -- | Convert an `MigrationsError` into a human-readable string.
-    formatMigrationsError :: MigrationsError -> String
-    formatMigrationsError (DuplicateMigrationName mig dep) =
+    formatMigrationsError :: IsString s => MigrationsError -> s
+    formatMigrationsError (DuplicateMigrationName mig dep) = fromString $
         "Duplicate migration names between "
             ++ showMigration mig
             ++ " and "
             ++ showMigration dep
-    formatMigrationsError (DuplicateDependency mig depName) =
+    formatMigrationsError (DuplicateDependency mig depName) = fromString $
         "Duplicate dependency "
         ++ show depName
         ++ " in migration "
         ++ showMigration mig
-    formatMigrationsError (UnknownDependency mig depName) =
+    formatMigrationsError (UnknownDependency mig depName) = fromString $
         "Unknown dependency "
         ++ show depName
         ++ " in migration "
         ++ showMigration mig
-    formatMigrationsError (RequiredDependsOnOptional req opt) =
+    formatMigrationsError (RequiredDependsOnOptional req opt) = fromString $
         "Required migration "
         ++ showMigration req
         ++ " depends on optional migration "
         ++ showMigration opt
-    formatMigrationsError (CircularDependency (mig :| [])) =
+    formatMigrationsError (CircularDependency (mig :| [])) = fromString $
         "The migration "
         ++ showMigration mig
         ++ " depends upon itself."
-    formatMigrationsError (CircularDependency (mig :| migs)) =
+    formatMigrationsError (CircularDependency (mig :| migs)) = fromString $
         "Circular dependency: "
         ++ (List.intercalate ", " (showMigration <$> (mig : migs)))
-    formatMigrationsError (LaterPhaseDependency mig dep) =
+    formatMigrationsError (LaterPhaseDependency mig dep) = fromString $
         "Phase violation: migration "
         ++ showMigration mig 
         ++ " (phase " ++ show (phase mig) ++ ")"
@@ -160,49 +170,57 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Error(
         ++ showMigration dep
         ++ " (phase " ++ show (phase dep) ++ ")"
         ++ ", which is in a later phase."
-    formatMigrationsError (NoRequiredReplacement mig) =
+    formatMigrationsError (NoRequiredReplacement mig) = fromString $
         "The migration "
         ++ showMigration mig
         ++ " has no required replacements (at least one is needed)."
-    formatMigrationsError (DuplicateReplaces mig replName) =
-        "Duplicate replaced name " 
-        ++ show replName
-        ++ " in migration "
-        ++ showMigration mig
-    formatMigrationsError (ReplacedStillExists mig repl) =
+    formatMigrationsError (DuplicateReplaces mig dupName) = fromString $
+        "The migration " ++ showMigration mig
+        ++ " has multiple replaces with the name " ++ show dupName
+    formatMigrationsError (ReplacedStillInList mig repl) = fromString $
         "Migration "
         ++ showMigration mig
         ++ " replaces migration "
         ++ showMigration repl
         ++ " but the latter still exists."
-    formatMigrationsError  EmptyMigrationList =
+    formatMigrationsError  EmptyMigrationList = fromString $
         "Empty migrations list"
-    formatMigrationsError (UnknownMigrations nms) =
-        "The following migrations are listed in the database as having\
-        \ been applied, but are not in the list of migrations given to us:"
+    formatMigrationsError (DuplicateExisting migname) = fromString $
+        "Multiple instances of migration name " ++ show migname
+        ++ " in database table."
+    formatMigrationsError (UnknownMigrations nms) = fromString $
+        "The following migrations are listed in the database as having"
+        <> " been applied, but are not in the list of migrations given to us:"
         <> (mconcat ((\s -> "\n    " <> show s) <$> nms))
         <>  "\n(Are you applying the wrong list of migrations to the\
                 \ wrong database?)"
-    formatMigrationsError (FingerprintMismatch nm) =
+    formatMigrationsError (FingerprintMismatch mig dbfp) = fromString $
         "The migration "
-        <> show nm
-        <> " does not match the fingerprint in the database."
-    formatMigrationsError (ReplacedMigrationsExist par mig) =
-        "The migration " <> show mig
-        <> " is replaced by the migration " <> show par
-        <> " but still exists in the main migration list."
-    formatMigrationsError (ReplacedFingerprint nm repl) =
-        "Migration " <> show repl <> " which is being replaced by the\
-        \ migration " <> show nm <> " does not match the fingerprint\
-        \ in the database."
-    formatMigrationsError (RequiredReplacementMissing nm repl) =
+        ++ showMigration mig
+        ++ " does not match the fingerprint in the database"
+        ++ "(database=" ++ show dbfp
+        ++ ", list=" ++ show (fingerprint mig)
+        ++ ")"
+    formatMigrationsError (ReplacedStillInDB mig rep) = fromString $
+        "The migration " ++ show rep
+        ++ " is replaced by the migration " ++ showMigration mig
+        ++ " but still exists in the database."
+    formatMigrationsError (ReplacedFingerprint mig repl) = fromString $
+        "Migration "
+        ++ show repl
+        ++ " which is being replaced by the migration "
+        ++ showMigration mig
+        ++ " does not match the fingerprint in the database."
+    formatMigrationsError (RequiredReplacementMissing nm repl) = fromString $
         "Migration " <> show nm <> " is missing required replacement "
         <> show repl <> " while other replaced migrations exist."
+    formatMigrationsError Locked = fromString $
+        "The database advisory locked is already locked (another migration"
+        ++  " is ongoing?)."
     formatMigrationsError Uninitialized =
-        "Database is uninitialized (no migrations have ever been applied)."
-    formatMigrationsError (MissingRequireds reqs) =
-        "Required migrations not applied: "
-        <> mconcat ((\s -> "\n    " <> show s) <$> reqs)
-
+        fromString "The database is uninitialized."
+    formatMigrationsError (RequiredUnapplied mig) = fromString $
+        "The migration " ++ showMigration mig
+        ++ " is required but not applied to the database."
 
 
