@@ -72,6 +72,10 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
                 getVertex :: CI Text -> Maybe Graph.Vertex }
 
 
+    -- | Boolean analog for whether we need to apply or replace a mgiration.
+    --
+    -- We're already checking whether the replaced migrations exist in
+    -- the database or not, just remember which one it is.
     data Apply = Apply | Replace
 
     -- | Order the migrations
