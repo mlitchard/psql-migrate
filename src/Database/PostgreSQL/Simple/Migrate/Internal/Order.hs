@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric       #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections       #-}
 
@@ -38,6 +39,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
     import           Data.Set             (Set)
     import qualified Data.Set             as Set
     import           Data.Text            (Text)
+    import qualified GHC.Generics         as Generics
 
     -- These screw up the formatting, so they get their own,
     -- unformatted, block.
@@ -77,6 +79,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
     -- We're already checking whether the replaced migrations exist in
     -- the database or not, just remember which one it is.
     data Apply = Apply | Replace
+        deriving (Show, Read, Ord, Eq, Enum, Bounded, Generics.Generic)
 
     -- | Order the migrations
     orderMigrations ::
@@ -419,6 +422,14 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
             checkTree tree =
                 case Foldable.toList tree of
                     []     -> pure ()
+                    -- If we only have one element in this strongly
+                    -- connected component, that is not an error.
+                    -- The only way this can be a circular dependency
+                    -- is if it's a trivial circular dependency (i.e.
+                    -- a migration that directly relies on itself)- and
+                    -- we've already checked for that back in checkCirc,
+                    -- when we were doing the base sanity checks.
+                    [_]    -> pure ()
                     (x:xs) -> Left . CircularDependency $
                                     fixup <$> (x :| xs)
 

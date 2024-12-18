@@ -404,7 +404,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
         where
             loc :: Stack.SrcLoc
             loc = case Stack.getCallStack Stack.callStack of
-                    _ : (_, x) : _ -> x
+                    (_, x) : _ -> x
                     -- The following should never happen.
                     _              -> error
                                         "Invalid call stack in makeMigration!"

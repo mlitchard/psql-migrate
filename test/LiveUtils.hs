@@ -4,16 +4,13 @@
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TemplateHaskell            #-}
 
-module LiveM (
-    TestM,
-    runTestM,
+module LiveUtils (
     liveTest,
     listTables,
     checkTableExists
 ) where
 
     import qualified Control.Exception                as Ex
-    import           Control.Monad.Reader
     import qualified Data.Text                        as Text
     import           Data.Time.Clock.POSIX            (getPOSIXTime)
     import qualified Database.PostgreSQL.Simple       as PG
@@ -21,19 +18,13 @@ module LiveM (
     import qualified Database.PostgreSQL.Simple.Types as PG
     import           Test.HUnit
 
-    newtype TestM a = TestM { getTestM :: Reader PG.ConnectInfo a }
-        deriving (Functor, Applicative, Monad)
-
-    runTestM :: forall a. TestM a -> PG.ConnectInfo -> a
-    runTestM testM cinfo = runReader (getTestM testM) cinfo
-
-    liveTest :: (PG.Connection -> Assertion) -> TestM Test
-    liveTest act = do
-            baseInfo :: PG.ConnectInfo <- TestM ask
+    liveTest :: (PG.Connection -> Assertion) -> PG.ConnectInfo -> Test
+    liveTest act baseInfo =
             let go :: Assertion
                 go = withDatabase baseInfo
                         (\liveInfo -> withConnection liveInfo act)
-            pure $ TestCase go
+            in
+            TestCase go
 
     withDatabase :: forall a. PG.ConnectInfo -> (PG.ConnectInfo -> IO a) -> IO a
     withDatabase baseInfo act = Ex.bracket makeDB dropDB go

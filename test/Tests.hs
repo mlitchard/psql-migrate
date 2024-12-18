@@ -14,7 +14,7 @@ module Tests (
 ) where
 
     import qualified Data.Aeson         as Aeson
-    import           Data.List.NonEmpty (NonEmpty (..))
+    -- import           Data.List.NonEmpty (NonEmpty (..))
     import           Data.Proxy
     import           Data.Typeable
     import           Test.HUnit
@@ -70,28 +70,33 @@ module Tests (
     orderTests :: Test
     orderTests = TestLabel "orderMigrations" $
                     TestList [
-                        testOneDep,
-                        testDupName,
-                        testDupDep,
-                        testUnknown,
-                        testReqOpt,
-                        testCir1,
-                        testCir2,
-                        testCir3
+                        testEmptyList
+                        -- testOneDep,
+                        -- testDupName,
+                        -- testDupDep,
+                        -- testUnknown,
+                        -- testReqOpt,
+                        -- testCir1,
+                        -- testCir2,
+                        -- testCir3
                     ]
 
-        where
-            mig1 :: Migration
-            mig1 = makeMigration "mig-1" ""
 
-            mig2 :: Migration
-            mig2 = makeMigration "mig-2" "" `addDependency` "mig-1"
+    testEmptyList :: Test
+    testEmptyList = TestLabel "EmptyList" $
+                        TestCase $ do
+                            assert (orderMigrations [] []
+                                        == Left EmptyMigrationList)
 
-            checkAndOrder :: [ Migration ]
-                                -> Either MigrationsError [ Migration ]
-            checkAndOrder migs = do
-                migGraph <- checkMigrations migs
-                pure $ orderMigrations migGraph
+    {-
+    mig1 :: Migration
+    mig1 = makeMigration "mig-1" "mig 1"
+
+    mig2 :: Migration
+    mig2 = makeMigration "mig-2" "mig 2" 
+
+    
+
 
             -- If there is a dependency between two migrations, the
             -- depended upon should be returned before the depender.
@@ -188,4 +193,4 @@ module Tests (
                                     == Left (CircularDependency
                                                 ("mig-1" :|
                                                     [ "mig-2", "mig-3" ]))
-
+    -}

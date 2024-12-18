@@ -269,6 +269,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                             SELECT 1
                             FROM pg_tables
                             WHERE tablename = 'schema_migrations'
+                                AND schemaname = 'public'
                             LIMIT 1
                         ); |]
                 ()

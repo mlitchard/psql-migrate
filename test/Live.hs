@@ -12,7 +12,7 @@ module Live (
     import qualified Database.PostgreSQL.Simple         as PG
     import           Database.PostgreSQL.Simple.Migrate
     import           Database.PostgreSQL.Simple.SqlQQ
-    import           LiveM
+    import           LiveUtils
     import           System.Exit
     import           Test.HUnit
 
@@ -20,7 +20,9 @@ module Live (
     withLiveTests origInfo otherTests = do
             res :: Either Ex.SomeException Counts <- Ex.try go1
             case res of
-                Left (Ex.SomeException _) -> exitFailure
+                Left (Ex.SomeException e) -> do
+                    putStrLn $ "Exception caught; " ++ show e
+                    exitFailure
                 Right cnts
                     | ((errors cnts > 0) || (failures cnts > 0)) ->
                         exitFailure
@@ -28,7 +30,7 @@ module Live (
 
         where
             allTests :: Test
-            allTests = TestList [ otherTests, runTestM liveTests origInfo ]
+            allTests = TestList [ otherTests, liveTests origInfo ]
 
             go1 :: IO Counts
             go1 = do
@@ -53,16 +55,25 @@ module Live (
                 `addDependency` "foo-1"
     -}
 
-    liveTests :: TestM Test
-    liveTests = do
-        lst :: [ Test ]  <- sequence [ test1 ]
-        pure $ TestLabel "LiveTests" $ TestList lst
+    liveTests :: PG.ConnectInfo -> Test
+    liveTests cinfo =
+        let lst :: [ Test ]  = [ test1 cinfo ] in
+        TestLabel "LiveTests" $ TestList lst
+
+    {-
+    noLogging :: Verbose -> IO String -> IO ()
+    noLogging _ mkmsg = mkmsg >>= putStrLn
+    -}
 
     noLogging :: Verbose -> IO String -> IO ()
     noLogging _ _ = pure ()
 
-    test1 :: TestM Test
+    test1 :: PG.ConnectInfo -> Test
     test1 = liveTest $ \conn -> do
-                res <- apply noLogging [ migFoo ] conn
-                assert (res == Right ())
+                res <- apply noLogging [ migFoo ] conn False
+                case res of
+                    Right () -> assert True
+                    Left err -> do
+                        putStrLn $ formatMigrationsError err
+                        assert False
 
