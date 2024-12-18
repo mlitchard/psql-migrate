@@ -1,5 +1,5 @@
-{-# LANGUAGE DeriveGeneric       #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections       #-}
 
 -- |
 -- Module      : Database.PostgreSQL.Simple.Migrate.Internal.Order
@@ -81,7 +81,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
         -> [ (Text, Text) ]
         -- ^ The pre-existing migrations (name, fingerprint)
         -> Either MigrationsError (Maybe Migration, [ (Apply, Migration) ])
-    orderMigrations []   _       = Left $ EmptyMigrationList
+    orderMigrations []   _       = Left EmptyMigrationList
     orderMigrations migs applied = do -- Either monad
 
         -- Make the name -> migration map.
@@ -161,7 +161,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
                         -> Migration
                         -> StateM ()
     checkMigrations migMap mig = do
-            liftEither $ baseChecks
+            liftEither baseChecks
             mfp :: Maybe Text <- getFingerprint (name mig)
             case mfp of
                 Nothing -> do
@@ -170,9 +170,8 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
                 Just fp
                     | fp /= fingerprint mig ->
                         failM $ FingerprintMismatch mig fp
-                    | otherwise             -> do
+                    | otherwise             ->
                         mapM_ noReplaces (replaces mig)
-                        pure ()
         where
 
             -- Do all the basic checking.
@@ -216,24 +215,21 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
             -- This is only called when we are a required migration.
             checkNoOpt :: Migration -> Either MigrationsError ()
             checkNoOpt dep =
-                if optional dep == Optional
-                then Left $ RequiredDependsOnOptional mig dep
-                else pure ()
+                when (optional dep == Optional) $
+                    Left $ RequiredDependsOnOptional mig dep
 
             -- Check that we are not in an early phase than a dependency.
             checkPhase :: Migration -> Either MigrationsError ()
             checkPhase dep =
-                if phase mig < phase dep
-                then Left $ LaterPhaseDependency mig dep
-                else pure ()
+                when (phase mig < phase dep) $
+                    Left $ LaterPhaseDependency mig dep
 
             -- Check that we're not a trivial circular dependency
             -- (i.e. we depend on ourselves)
             checkCirc :: CI Text -> Either MigrationsError ()
             checkCirc depName =
-                if depName == name mig
-                then Left . CircularDependency $ mig :| [ ]
-                else pure ()
+                when (depName == name mig) $
+                    Left . CircularDependency $ mig :| [ ]
 
             -- Do basic checking of replaces.
             --
@@ -306,7 +302,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
                     -- be in the database.  It's an error if this isn't
                     -- so.
                     let f :: (Bool, Replaces) -> Bool
-                        f (inDB, repl) = (not inDB)
+                        f (inDB, repl) = not inDB
                                             && (rOptional repl == Required)
                     in
                     case List.find f dbs of
@@ -322,7 +318,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
                 case mfp of
                     Nothing -> pure (False, repl)
                     Just fp ->
-                        if (fp == rFingerprint repl)
+                        if fp == rFingerprint repl
                         then pure (True, repl)
                         else failM $ ReplacedFingerprint mig
                                             (CI.original (rName repl))
@@ -522,7 +518,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
                     ((Map (CI Text) Text, Map (CI Text) Apply), a) }
 
     instance Functor StateM where
-        fmap f sm = StateM $ \s -> fmap f <$> runStateM sm s
+        fmap f sm = StateM $ fmap (fmap f) . runStateM sm
 
     instance Applicative StateM where
         pure a = StateM $ \s -> Right (s, a)
@@ -530,7 +526,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
             StateM $ \s0 -> do -- Either monad
                 (s1, f) <- runStateM sm1 s0
                 (s2, a) <- runStateM sm2 s1
-                Right $ (s2, f a)
+                Right (s2, f a)
 
     instance Monad StateM where
         return = pure
@@ -558,7 +554,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
 
     -- | Lift an either into a StateM
     liftEither :: Either MigrationsError a -> StateM a
-    liftEither e = StateM $ \s -> (\a -> (s, a)) <$> e
+    liftEither e = StateM $ \s -> (s,) <$> e
 
     -- | Fail with a migrations error.
     failM :: MigrationsError -> StateM a

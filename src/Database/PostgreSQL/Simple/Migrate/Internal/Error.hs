@@ -113,25 +113,25 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Error(
     instance Exception MigrationsError where
 
     instance NFData MigrationsError where
-        rnf (DuplicateMigrationName x y)     = rnf x `seq` rnf y `seq` ()
-        rnf (DuplicateDependency x y)        = rnf x `seq` rnf y `seq` ()
-        rnf (UnknownDependency x y)          = rnf x `seq` rnf y `seq` ()
-        rnf (RequiredDependsOnOptional x y)  = rnf x `seq` rnf y `seq` ()
-        rnf (CircularDependency xs)          = rnf xs `seq` ()
-        rnf (LaterPhaseDependency x y)       = rnf x `seq` rnf y `seq` ()
+        rnf (DuplicateMigrationName x y)     = rnf x `seq` rnf y
+        rnf (DuplicateDependency x y)        = rnf x `seq` rnf y
+        rnf (UnknownDependency x y)          = rnf x `seq` rnf y
+        rnf (RequiredDependsOnOptional x y)  = rnf x `seq` rnf y
+        rnf (CircularDependency xs)          = rnf xs
+        rnf (LaterPhaseDependency x y)       = rnf x `seq` rnf y
         rnf (NoRequiredReplacement t)        = rnf t
-        rnf (DuplicateReplaces x y)          = rnf x `seq` rnf y `seq` ()
-        rnf (ReplacedStillInList t u)        = rnf t `seq` rnf u `seq` ()
+        rnf (DuplicateReplaces x y)          = rnf x `seq` rnf y
+        rnf (ReplacedStillInList t u)        = rnf t `seq` rnf u
         rnf EmptyMigrationList               = ()
-        rnf (DuplicateExisting x)            = rnf x `seq` ()
-        rnf (UnknownMigrations xs)           = rnf xs `seq` ()
-        rnf (FingerprintMismatch x y)        = rnf x `seq` rnf y `seq` ()
-        rnf (ReplacedStillInDB x y)          = rnf x `seq` rnf y `seq` ()
-        rnf (ReplacedFingerprint x y)        = rnf x `seq` rnf y `seq` ()
-        rnf (RequiredReplacementMissing x y) = rnf x `seq` rnf y `seq` ()
+        rnf (DuplicateExisting x)            = rnf x
+        rnf (UnknownMigrations xs)           = rnf xs
+        rnf (FingerprintMismatch x y)        = rnf x `seq` rnf y
+        rnf (ReplacedStillInDB x y)          = rnf x `seq` rnf y
+        rnf (ReplacedFingerprint x y)        = rnf x `seq` rnf y
+        rnf (RequiredReplacementMissing x y) = rnf x `seq` rnf y
         rnf Locked                           = ()
         rnf Uninitialized                    = ()
-        rnf (RequiredUnapplied x)            = rnf x `seq` ()
+        rnf (RequiredUnapplied x)            = rnf x
 
     -- | Convert an `MigrationsError` into a human-readable string.
     formatMigrationsError :: IsString s => MigrationsError -> s
@@ -161,7 +161,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Error(
         ++ " depends upon itself."
     formatMigrationsError (CircularDependency (mig :| migs)) = fromString $
         "Circular dependency: "
-        ++ (List.intercalate ", " (showMigration <$> (mig : migs)))
+        ++ List.intercalate ", " (showMigration <$> (mig : migs))
     formatMigrationsError (LaterPhaseDependency mig dep) = fromString $
         "Phase violation: migration "
         ++ showMigration mig 
@@ -183,15 +183,15 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Error(
         ++ " replaces migration "
         ++ showMigration repl
         ++ " but the latter still exists."
-    formatMigrationsError  EmptyMigrationList = fromString $
-        "Empty migrations list"
+    formatMigrationsError  EmptyMigrationList =
+        fromString "Empty migrations list"
     formatMigrationsError (DuplicateExisting migname) = fromString $
         "Multiple instances of migration name " ++ show migname
         ++ " in database table."
     formatMigrationsError (UnknownMigrations nms) = fromString $
         "The following migrations are listed in the database as having"
-        <> " been applied, but are not in the list of migrations given to us:"
-        <> (mconcat ((\s -> "\n    " <> show s) <$> nms))
+        ++ " been applied, but are not in the list of migrations given to us:"
+        ++ mconcat ((\s -> "\n    " <> show s) <$> nms)
         <>  "\n(Are you applying the wrong list of migrations to the\
                 \ wrong database?)"
     formatMigrationsError (FingerprintMismatch mig dbfp) = fromString $

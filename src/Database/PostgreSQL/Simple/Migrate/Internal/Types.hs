@@ -202,7 +202,6 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
                     `seq` rnf (replaces mig)
                     `seq` rnf (fileName mig)
                     `seq` rnf (lineNumber mig)
-                    `seq` ()
 
     instance Aeson.FromJSON Migration where
         parseJSON = Aeson.withObject "Migration" $ \obj -> do
@@ -211,7 +210,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
             let fingerprint :: Text
                 fingerprint = makeFingerprint command
             dependencies :: [ CI Text ]
-                <- (fmap CI.mk . fromMaybe []) <$> (obj Aeson..:? "deps")
+                <- fmap CI.mk . fromMaybe [] <$> (obj Aeson..:? "deps")
             optional :: Optional
                 <- fromMaybe Required <$> (obj Aeson..:? "optional")
             phase :: Int
@@ -434,7 +433,6 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
         rnf rep = rnf (rName rep)
                     `seq` rnf (rFingerprint rep)
                     `seq` rnf (rOptional rep)
-                    `seq` ()
 
     instance Aeson.FromJSON Replaces where
         parseJSON = Aeson.withObject "Replaces" $ \obj -> do

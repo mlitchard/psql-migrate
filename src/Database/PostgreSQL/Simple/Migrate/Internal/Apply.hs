@@ -89,7 +89,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
             logmsg Low $ pure "Checking if the database is initialized."
             initialized <- isInitialized logmsg conn
             aps :: [ (Text, Text) ]
-                <- if (not initialized)
+                <- if not initialized
                     then do
                         logmsg Low $
                             pure "Initializing database."
@@ -333,9 +333,9 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                             Just p  -> p < phase mig
         when newPhase $ logmsg Medium 
                             (pure $ "Starting phase "
-                                        <> (fromString (show (phase mig))))
+                                        <> fromString (show (phase mig)))
         logmsg High (pure $ "Applying migration "
-                                <> (fromString (showMigration mig)))
+                                <> fromString (showMigration mig))
         r <- Exception.try $ 
             PG.withTransactionLevel PG.Serializable conn $ do
                 case app of
