@@ -70,10 +70,14 @@ module Live (
 
     test1 :: PG.ConnectInfo -> Test
     test1 = liveTest $ \conn -> do
+                b1 :: Bool <- checkTableExists conn "foo"
+                assert (not b1)
                 res <- apply noLogging [ migFoo ] conn False
                 case res of
                     Right () -> assert True
                     Left err -> do
                         putStrLn $ formatMigrationsError err
                         assert False
+                b2 :: Bool <- checkTableExists conn "foo"
+                assert b2
 
