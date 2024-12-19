@@ -475,9 +475,9 @@
 
 module Database.PostgreSQL.Simple.Migrate (
     -- * Migration type
-    Migration,
+    Migration(..),
     Optional(..),
-    Replaces,
+    Replaces(..),
 
     -- * Creating migrations
     makeMigration,
@@ -510,7 +510,6 @@ module Database.PostgreSQL.Simple.Migrate (
     --
     -- | Useful for constructing `Replaces` structures.
     --
-    fingerprint,
     makeFingerprint
 ) where
 
