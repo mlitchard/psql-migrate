@@ -297,7 +297,9 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Apply (
                         name TEXT PRIMARY KEY,
                         fingerprint CHAR(44) UNIQUE NOT NULL,
                         executed_at TIMESTAMP WITH TIME ZONE
-                            NOT NULL DEFAULT NOW());
+                            NOT NULL DEFAULT NOW(),
+                        CONSTRAINT con1 CHECK (lower(name) = name)
+                    );
                 |] ()
             _ <- pgExecute logmsg conn
                 [sql|
