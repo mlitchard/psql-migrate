@@ -71,7 +71,8 @@ module Tests (
     orderTests = TestLabel "orderMigrations" $
                     TestList [
                         testEmptyList,
-                        testOneDep
+                        testOneDep,
+                        testInterphase
                         -- testDupName,
                         -- testDupDep,
                         -- testUnknown,
@@ -85,29 +86,48 @@ module Tests (
     testEmptyList :: Test
     testEmptyList = TestLabel "EmptyList" $
                         TestCase $ do
-                            assert (orderMigrations [] []
-                                        == Left EmptyMigrationList)
-
-    mig1 :: Migration
-    mig1 = makeMigration "mig-1" "mig 1"
-
-    mig2 :: Migration
-    mig2 = makeMigration "mig-2" "mig 2" 
+                            assertEqual "" 
+                                (orderMigrations [] [])
+                                (Left EmptyMigrationList)
 
     -- If there is a dependency between two migrations, the
     -- depended upon should be returned before the depender.
     testOneDep :: Test
-    testOneDep = TestLabel "oneDep" . TestCase $ do
-                        let mig2a :: Migration
-                            mig2a = mig2 `addDependency` "mig-1"
-                        assert $
-                            orderMigrations [ mig1, mig2a ] []
-                                == Right (Just mig1,
-                                            [ (Apply,  mig1), (Apply, mig2) ])
-                        assert $
-                            orderMigrations [ mig2a, mig1 ] []
-                                == Right (Just mig1,
-                                            [ (Apply,  mig1), (Apply, mig2) ])
+    testOneDep = TestLabel "oneDep" $ TestList [ t1, t2 ]
+        where
+            t1 :: Test
+            t1 = TestCase $ do
+                    let mig1 :: Migration
+                        mig1 = makeMigration "mig-1" "mig 1"
+                        mig2 :: Migration
+                        mig2 = makeMigration  "mig-2" "mig 2"
+                                `addDependency` "mig-1"
+                    assertEqual ""
+                        (orderMigrations [ mig1, mig2 ] [])
+                        (Right (Just mig1, [ (Apply,  mig1), (Apply, mig2) ]))
+
+            t2 :: Test
+            t2 = TestCase $ do
+                    let mig1 :: Migration
+                        mig1 = makeMigration "mig-1" "mig 1"
+                        mig2 :: Migration
+                        mig2 = makeMigration  "mig-2" "mig 2"
+                                `addDependency` "mig-1"
+                    assertEqual ""
+                        (orderMigrations [ mig2, mig1 ] [])
+                        (Right (Just mig1, [ (Apply,  mig1), (Apply, mig2) ]))
+
+    testInterphase :: Test
+    testInterphase = TestCase $ do
+                    let mig1 :: Migration
+                        mig1 = makeMigration "mig-1" "mig 1"
+                                `setPhase` 0
+                        mig2 :: Migration
+                        mig2 = makeMigration  "mig-2" "mig 2"
+                                `addDependency` "mig-1"
+                    assertEqual ""
+                        (orderMigrations [ mig1, mig2 ] [])
+                        (Right (Just mig1, [ (Apply,  mig1), (Apply, mig2) ]))
 
     {-
     -- Test detection of duplicate migration names.
