@@ -14,7 +14,7 @@ module Tests (
 ) where
 
     import qualified Data.Aeson         as Aeson
-    -- import           Data.List.NonEmpty (NonEmpty (..))
+    import           Data.List.NonEmpty (NonEmpty (..))
     import           Data.Proxy
     import           Data.Typeable
     import           Test.HUnit
@@ -72,8 +72,15 @@ module Tests (
                     TestList [
                         testEmptyList,
                         testOneDep,
-                        testInterphase
-                        -- testDupName,
+                        testInterphase,
+                        testDupName,
+                        testDupDep,
+                        testUnknownDep,
+                        testReqOpt,
+                        testCircDep1,
+                        testCircDep2,
+                        testCircDep3,
+                        testLaterPhase
                         -- testDupDep,
                         -- testUnknown,
                         -- testReqOpt,
@@ -96,7 +103,7 @@ module Tests (
     testOneDep = TestLabel "oneDep" $ TestList [ t1, t2 ]
         where
             t1 :: Test
-            t1 = TestCase $ do
+            t1 = TestLabel "t1" $ TestCase $ do
                     let mig1 :: Migration
                         mig1 = makeMigration "mig-1" "mig 1"
                         mig2 :: Migration
@@ -107,7 +114,7 @@ module Tests (
                         (Right (Just mig1, [ (Apply,  mig1), (Apply, mig2) ]))
 
             t2 :: Test
-            t2 = TestCase $ do
+            t2 = TestLabel "t2" $ TestCase $ do
                     let mig1 :: Migration
                         mig1 = makeMigration "mig-1" "mig 1"
                         mig2 :: Migration
@@ -118,26 +125,119 @@ module Tests (
                         (Right (Just mig1, [ (Apply,  mig1), (Apply, mig2) ]))
 
     testInterphase :: Test
-    testInterphase = TestCase $ do
-                    let mig1 :: Migration
-                        mig1 = makeMigration "mig-1" "mig 1"
-                                `setPhase` 0
-                        mig2 :: Migration
-                        mig2 = makeMigration  "mig-2" "mig 2"
-                                `addDependency` "mig-1"
-                    assertEqual ""
-                        (orderMigrations [ mig1, mig2 ] [])
-                        (Right (Just mig1, [ (Apply,  mig1), (Apply, mig2) ]))
+    testInterphase =
+        TestLabel "interphase" $ TestCase $ do
+            let mig1 :: Migration
+                mig1 = makeMigration "mig-1" "mig 1"
+                        `setPhase` 0
+                mig2 :: Migration
+                mig2 = makeMigration  "mig-2" "mig 2"
+                        `addDependency` "mig-1"
+            assertEqual ""
+                (orderMigrations [ mig1, mig2 ] [])
+                (Right (Just mig1, [ (Apply,  mig1), (Apply, mig2) ]))
 
-    {-
     -- Test detection of duplicate migration names.
     testDupName :: Test
-    testDupName = TestLabel "dupName" . TestCase $ do
-                        assert $
-                            checkAndOrder [ mig1, mig1 ]
-                            == Left (DuplicateMigrationName "mig-1")
+    testDupName =
+        TestLabel "dupName" $ TestCase $ do
+            let mig1 :: Migration
+                mig1 = makeMigration "mig-1" "mig 1"
+            assertEqual "" 
+                (orderMigrations [ mig1, mig1 ] [])
+                (Left (DuplicateMigrationName mig1 mig1))
+
+    testDupDep :: Test
+    testDupDep =
+        TestLabel "dupDep" $ TestCase $ do
+            let mig1 :: Migration
+                mig1 = makeMigration "mig-1" "mig 1"
+                mig2 :: Migration
+                mig2 = makeMigration  "mig-2" "mig 2"
+                        `addDependency` "mig-1"
+                        `addDependency` "mig-1"
+            assertEqual ""
+                (orderMigrations [ mig1, mig2 ] [])
+                (Left (DuplicateDependency mig2 "mig-1"))
+
+    testUnknownDep :: Test
+    testUnknownDep =
+        TestLabel "unknownDep" $ TestCase $ do
+            let mig2 :: Migration
+                mig2 = makeMigration  "mig-2" "mig 2"
+                        `addDependency` "mig-1"
+            assertEqual ""
+                (orderMigrations [ mig2 ] [])
+                (Left (UnknownDependency mig2 "mig-1"))
 
 
+    testReqOpt :: Test
+    testReqOpt =
+        TestLabel "testReqOpt" $ TestCase $ do
+            let mig1 :: Migration
+                mig1 = makeMigration "mig-1" "mig 1"
+                        `setOptional` Optional
+                mig2 :: Migration
+                mig2 = makeMigration  "mig-2" "mig 2"
+                        `addDependency` "mig-1"
+            assertEqual ""
+                (orderMigrations [ mig1, mig2 ] [])
+                (Left (RequiredDependsOnOptional mig2 mig1))
+
+    testCircDep1 :: Test
+    testCircDep1 =
+        TestLabel "circDepSimple" $ TestCase $ do
+            let mig1 :: Migration
+                mig1 = makeMigration "mig-1" "mig 1"
+                        `addDependency` "mig-1"
+            assertEqual ""
+                (orderMigrations [ mig1 ] [])
+                (Left (CircularDependency (mig1 :| [])))
+
+    testCircDep2 :: Test
+    testCircDep2 =
+        TestLabel "circDepSimple" $ TestCase $ do
+            let mig1 :: Migration
+                mig1 = makeMigration "mig-1" "mig 1"
+                        `addDependency` "mig-2"
+                mig2 :: Migration
+                mig2 = makeMigration  "mig-2" "mig 2"
+                        `addDependency` "mig-1"
+            assertEqual ""
+                (orderMigrations [ mig1, mig2 ] [])
+                (Left (CircularDependency (mig1 :| [mig2])))
+
+    testCircDep3 :: Test
+    testCircDep3 =
+        TestLabel "circDepSimple" $ TestCase $ do
+            let mig1 :: Migration
+                mig1 = makeMigration "mig-1" "mig 1"
+                        `addDependency` "mig-3"
+                mig2 :: Migration
+                mig2 = makeMigration  "mig-2" "mig 2"
+                        `addDependency` "mig-1"
+                mig3 :: Migration
+                mig3 = makeMigration  "mig-3" "mig 3"
+                        `addDependency` "mig-2"
+            assertEqual ""
+                (orderMigrations [ mig1, mig2, mig3 ] [])
+                (Left (CircularDependency (mig1 :| [mig2, mig3])))
+
+
+    testLaterPhase :: Test
+    testLaterPhase =
+        TestLabel "laterPhase" $ TestCase $ do
+            let mig1 :: Migration
+                mig1 = makeMigration "mig-1" "mig 1"
+                mig2 :: Migration
+                mig2 = makeMigration  "mig-2" "mig 2"
+                        `addDependency` "mig-1"
+                        `setPhase` 0
+            assertEqual ""
+                (orderMigrations [ mig1, mig2 ] [])
+                (Left (LaterPhaseDependency mig2 mig1))
+
+    {-
     mig2dupdep :: Migration
     mig2dupdep = makeMigration "mig-2" "" 
                     `addDependencies` [ "mig-1", "mig-1" ]
