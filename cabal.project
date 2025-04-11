@@ -1,3 +1,3 @@
-packages: ./horizon-platform-template
+packages: ./.
 
 test-show-details: streaming

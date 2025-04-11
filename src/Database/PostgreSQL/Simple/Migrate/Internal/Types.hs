@@ -221,7 +221,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
             lineNumber :: Int <- obj Aeson..: "lineNumber"
             pure $ Migration { .. }
 
-    toObject :: Aeson.KeyValue kv => Migration -> [ kv ]
+    toObject :: Aeson.KeyValue e kv => Migration -> [ kv ]
     toObject mig =
         [
             "name" Aeson..= CI.original (name mig),
@@ -449,7 +449,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
                                 rFingerprint = fprint,
                                 rOptional    = opt }
 
-    replacesObject :: Aeson.KeyValue kv => Replaces -> [ kv ]
+    replacesObject :: Aeson.KeyValue e kv => Replaces -> [ kv ]
     replacesObject rep = [ "name" Aeson..= CI.original (rName rep),
                             "fingerprint" Aeson..= rFingerprint rep
                             ]
