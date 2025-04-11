@@ -1,0 +1,8 @@
+cradle:
+  cabal:
+    - path: "./src"
+      component: "lib:psql-migrate"
+    - path: "./src"
+      component: "exe:psql-migrate-test"
+    - path: "./test"
+      component: "exe:psql-migrate-test"

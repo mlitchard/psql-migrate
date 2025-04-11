@@ -29,6 +29,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
     import qualified Data.CaseInsensitive as CI
     import qualified Data.Foldable        as Foldable
     import qualified Data.Graph           as Graph
+    import          Data.Kind            (Type)
     import           Data.IntMap.Strict   (IntMap)
     import qualified Data.IntMap.Strict   as IntMap
     import qualified Data.List            as List
@@ -49,6 +50,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
     -- | They type of a node in the graph.
     --
     -- Using a structure instead of a tuple for correctness reasons.
+    type Node :: Type
     data Node = Node {
                     getMigration :: Migration,
                     getKey :: CI Text,
@@ -61,6 +63,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
     -- We'd like to call this a Graph, but that name is taken.  If I
     -- think of a better name, I'll rename it.
     --
+    type Grph :: Type
     data Grph = Grph {
                 -- | The graph object
                 getGraph :: Graph.Graph,
@@ -78,8 +81,9 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
     --
     -- We're already checking whether the replaced migrations exist in
     -- the database or not, just remember which one it is.
+    type Apply :: Type
     data Apply = Apply | Replace
-        deriving (Show, Read, Ord, Eq, Enum, Bounded, Generics.Generic)
+        deriving stock (Show, Read, Ord, Eq, Enum, Bounded, Generics.Generic)
 
     -- | Order the migrations
     orderMigrations ::
@@ -277,7 +281,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
                     Nothing   -> pure ()
                     Just rmig -> Left $ ReplacedStillInList mig rmig
 
-            -- | We should not have any of the replaced migrations in
+            -- We should not have any of the replaced migrations in
             -- the database.
             --
             -- This is called when the migration that is replacing them
@@ -292,7 +296,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
                     Just _  -> failM $ ReplacedStillInDB mig
                                             (CI.original (rName repl))
 
-            -- | Make sure that either all the required replaced migrations
+            -- Make sure that either all the required replaced migrations
             -- are in the database, or no replaced migrations are in the
             -- database.
             getApplyType :: [ Replaces ] -> StateM Apply
@@ -523,7 +527,8 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Order (
     -- I don't want to depend upon MTL just for one bit of code, but
     -- having a transformer stack in one place is _really useful_.
     -- So I just hand-roll my own.
-    --
+    type role StateM representational
+    type StateM :: Type -> Type
     newtype StateM a =
         StateM {
             runStateM ::

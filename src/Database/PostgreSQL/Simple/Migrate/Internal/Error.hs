@@ -21,6 +21,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Error(
 
     import           Control.DeepSeq
     import           Control.Exception  (Exception)
+    import          Data.Kind          (Type)
     import qualified Data.List          as List
     import           Data.List.NonEmpty (NonEmpty (..))
     import           Data.String
@@ -35,8 +36,9 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Error(
     --
     -- You can use `formatMigrationsError` to convert this type
     -- into a human-readable string.
+    type MigrationsError :: Type
     data MigrationsError =
-    
+
         -- | Two (or more) migrations have the same name.
         DuplicateMigrationName Migration Migration
 
@@ -108,7 +110,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Error(
         -- `Database.PostgreSQL.Simple.Migrate.check`.
         --
         | RequiredUnapplied Migration
-        deriving (Show, Read, Ord, Eq)
+        deriving stock (Show, Read, Ord, Eq)
 
     instance Exception MigrationsError where
 
@@ -192,8 +194,8 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Error(
         "The following migrations are listed in the database as having"
         ++ " been applied, but are not in the list of migrations given to us:"
         ++ mconcat ((\s -> "\n    " <> show s) <$> nms)
-        <>  "\n(Are you applying the wrong list of migrations to the\
-                \ wrong database?)"
+        <>  "\n(Are you applying the wrong list of migrations to the wrong database?)"
+
     formatMigrationsError (FingerprintMismatch mig dbfp) = fromString $
         "The migration "
         ++ showMigration mig
@@ -222,5 +224,3 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Error(
     formatMigrationsError (RequiredUnapplied mig) = fromString $
         "The migration " ++ showMigration mig
         ++ " is required but not applied to the database."
-
-

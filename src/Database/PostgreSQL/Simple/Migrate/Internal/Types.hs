@@ -35,6 +35,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
 
     import           Control.DeepSeq
     import qualified Data.Aeson                       as Aeson
+    import Data.Kind (Type,Constraint)
     import qualified Data.ByteString.Char8            as Char8
     import           Data.CaseInsensitive             (CI)
     import qualified Data.CaseInsensitive             as CI
@@ -51,11 +52,12 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
 
     -- | Boolean-analog for whether a migration is optional or required.
     --
+    type Optional :: Type
     data Optional = Optional  
                         -- ^ The migration may not have been applied yet.
                     | Required
                         -- ^ The migration must have been applied.
-        deriving (Show, Read, Ord, Eq, Generic, Bounded, Enum)
+        deriving stock (Show, Read, Ord, Eq, Generic, Bounded, Enum)
 
     instance NFData Optional where
         rnf = rwhnf
@@ -110,6 +112,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     -- ]
     -- @
     --
+    type Migration :: Type
     data Migration = Migration {
         name :: CI Text,
         -- ^ The name of the migration.
@@ -178,7 +181,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
         --
         -- Used to make error messages nicer.
         
-    } deriving (Show, Read, Generic)
+    } deriving stock (Show, Read, Generic)
 
     -- | Eq on Migrations is defined by name only.
     instance Eq Migration where
@@ -248,7 +251,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
         toEncoding mig = Aeson.pairs . mconcat $ toObject mig
 
 
-
+    type Stringish :: Type -> Constraint
     class Stringish a where
         toASCII :: a -> QC.ASCIIString
         fromASCII :: QC.ASCIIString -> a
@@ -273,11 +276,12 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
         toASCII = toASCII . fromQuery
         fromASCII = Query . fromASCII
 
+    type ArbReplaces :: Type
     data ArbReplaces = ArbReplaces {
         arbRName :: QC.ASCIIString,
         arbRFingerprint :: QC.ASCIIString,
         arbROptional :: Optional }
-        deriving (Generic)
+        deriving stock (Generic)
 
     instance QC.Arbitrary ArbReplaces where
         arbitrary = do
@@ -299,6 +303,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
         arbRFingerprint = toASCII (rFingerprint rep),
         arbROptional = rOptional rep }
 
+    type ArbMig :: Type
     data ArbMig = ArbMig {
         arbName :: QC.ASCIIString,
         arbCommand :: QC.ASCIIString,
@@ -309,7 +314,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
         arbReplaces :: [ ArbReplaces ],
         arbFileName :: QC.ASCIIString,
         arbLineNumber :: Int  }
-        deriving (Generic)
+        deriving stock (Generic)
 
     instance QC.Arbitrary ArbMig where
         arbitrary = do
@@ -417,6 +422,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     -- and can be modified by the 
     -- `Database.PostgreSQL.Simple.Migrate.setReplacesOptional` function.
     --
+    type Replaces :: Type
     data Replaces = Replaces {
                             rName        :: CI Text,
                             -- ^ Name of the migration being replaced.
@@ -427,7 +433,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
                             rOptional    :: Optional
                             -- ^ If the replaced migration is optional.
                             }
-                            deriving (Show, Read, Ord, Eq, Generic)
+                            deriving stock (Show, Read, Ord, Eq, Generic)
 
     instance NFData Replaces where
         rnf rep = rnf (rName rep)
@@ -595,6 +601,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
     -- `Database.PostgreSQL.Simple.Migrate.Internal.Apply.check`.
     -- Can be used to control much detail to print out or log.
     --
+    type Verbose :: Type
     data Verbose =
             -- | Error messages and top level messages.
             Low
@@ -609,7 +616,7 @@ module Database.PostgreSQL.Simple.Migrate.Internal.Types (
             --
             -- Also opening and closing database connections.
             | Detail
-        deriving (Show, Read, Ord, Eq, Enum, Bounded)
+        deriving stock (Show, Read, Ord, Eq, Enum, Bounded)
 
 
 
