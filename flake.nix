@@ -68,6 +68,7 @@
           ] ++ [
             nixpkgs-fmt
             stylish-haskell
+            devtools.fourmolu
           ]);
 
           shellHook =
