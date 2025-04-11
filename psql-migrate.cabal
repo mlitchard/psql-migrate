@@ -39,7 +39,7 @@ library
   else
     ghc-options:    -O2
   build-depends:    base >=4.7 && <5
-                    , aeson
+                    , aeson >= 2.0.0
                     , base64-bytestring
                     , bytestring
                     , case-insensitive
