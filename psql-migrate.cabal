@@ -59,3 +59,7 @@ library
                     , QuickCheck
                     , text
 
+executable psql-migrate-test
+  import :          share
+  main-is:          Main.hs
+  hs-source-dirs:   test src
